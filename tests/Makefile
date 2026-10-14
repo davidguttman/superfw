@@ -33,3 +33,10 @@ clean:
 
 cli_tests:
 	$(CC) -flto -O0 -ggdb -I../src/ -Wall $(MEMCHK_FLAGS) -o cli_patchengine.bin cli_patchengine.c ../src/patchengine.c  ../src/util.c  -I../  -ffunction-sections -fdata-sections  -Wl,--gc-sections
+
+# Focused production-parser gate, no lcov dependency or changes to upstream all.
+.PHONY: kid_tests
+kid_tests:
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie -I../src -I.. -o kid_library_test.bin kid_library_test.c ../src/kid_library.c
+	./kid_library_test.bin
+	uv run ../tools/kid-art.py --self-test ./kid_library_test.bin
