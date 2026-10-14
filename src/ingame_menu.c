@@ -30,16 +30,17 @@
 #include "supercard_driver.h"
 #include "res/icons-menu.h"
 #include "ingame.h"
+#include "kid_state.h"
+#include "common.h"
 
 #include "directsave.h"
 
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-#define MAX(a,b) ((a) > (b) ? (a) : (b))
 
 #define SAVESTATE_VERSION       0x00010000
 
 // ASM functions and varibles:
 extern unsigned has_rtc_support;
+extern unsigned ingame_kid_mode, ingame_ds_used;
 extern unsigned ingame_menu_lang;
 extern uint32_t cheat_base_addr;
 extern uint32_t menu_anim_speed;
@@ -598,6 +599,12 @@ void draw_popup(uint8_t *fb) {
 }
 
 void draw_main_menu(uint8_t *fb, unsigned framen) {
+  if (ingame_kid_mode) {
+    draw_text("Keep playing", fb, 24, 55, HI_COLOR);
+    draw_text("Choose another game", fb, 24, 79, HI_COLOR);
+    selbarpos = 55 + 24*copt;
+    return;
+  }
   bool havess = num_mem_savestates || num_dsk_savestates;
   draw_text(msgs[ingame_menu_lang][IMENU_MAIN0_BACK_GAME],  fb, 24, 36 + 19*0, HI_COLOR);
   draw_text(msgs[ingame_menu_lang][IMENU_MAIN1_RESET],      fb, 24, 36 + 19*1, HI_COLOR);
@@ -788,6 +795,33 @@ bool action_reset_fw_nosave() {
   program_sram_dump(NULL, 0);
   // Go ahead and reboot to flash.
   reset_fw();
+  return false;
+}
+
+/* All fallible I/O precedes reset_fw, which maps actual flash and wipes RAM.
+ * Keep the pending sentinel until both the save and durable handoff succeed.
+ * DirectSave/no-save have no SRAM save pattern and must NEVER dump SRAM. */
+static bool kid_ingame_input(unsigned pressed) {
+  if (pressed & KEY_BUTTB) return true;
+  if (pressed & KEY_BUTTA) {
+    if (!copt) return true;
+    /* Assembly enters with SD disabled. Like the normal menu actions, map
+     * the interface before the first save/marker open, not after SRAM reads. */
+    set_supercard_mode(MAPPED_SDRAM, true, true);
+    if (!ingame_ds_used && savefile_pattern[0] &&
+        !write_save_sram_rotate_checked(savefile_pattern, MAX(2, MIN(MAX_BACKUP_CNT, savefile_backups)))) {
+      popup.msg="Could not save. Keep playing";
+    } else if (!kid_skip_write() || !kid_remove_file(PENDING_SAVE_FILEPATH)) {
+      popup.msg="Could not return. Keep playing";
+    } else {
+      reset_fw(); /* No RAM handoff: flashed firmware consumes the SD marker. */
+      /* Defensive only: the assembly reset cannot normally return. */
+      if (!ingame_ds_used && savefile_pattern[0])
+        program_sram_dump(savefile_pattern, MAX(2, MIN(MAX_BACKUP_CNT, savefile_backups)));
+      popup.msg="Could not return. Keep playing";
+    }
+    set_supercard_mode(MAPPED_SDRAM, true, false);
+  } else if (pressed & (KEY_BUTTUP | KEY_BUTTDOWN)) copt ^= 1;
   return false;
 }
 
@@ -1269,6 +1303,8 @@ void ingame_menu_loop(uint32_t *use_cheats_hook) {
       }
       else if (pressed & (KEY_BUTTLEFT | KEY_BUTTRIGHT))
         popup.opt ^= 1;
+    } else if (ingame_kid_mode) {
+      if (kid_ingame_input(pressed)) break;
     } else {
       if (submenu != 0 && pressed & KEY_BUTTB) {
         submenu = 0;

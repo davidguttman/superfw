@@ -23,6 +23,8 @@
 #define IWRAM_SPILL_SIZE        (16 * 1024)
 #define VRAM_SPILL_SIZE         (81 * 1024)       // Two frames + 1KiB for OBJs
 
+#define IGM_KID_MODE_OFF              0x284    // Appended runtime header flag
+
 #define IGM_ENTRYPOINT_NOCHEATS_OFF     ( 8*4)    // Offsets in ingame.S
 #define IGM_ENTRYPOINT_CHEATS_OFF       (12*4)
 
@@ -58,6 +60,7 @@ typedef struct {
   uint32_t savefile_backups;           // Backup count
   char savefile_pattern[256];          // File name (without the .sav) pattern
   char statefile_pattern[256];         // File name (without the .X.state) pattern
+  uint32_t menu_kid_mode;              // Runtime-only child-safe menu override
 } t_igmenu;
 
 // Built-in assets
@@ -215,3 +218,7 @@ _Static_assert(offsetof(t_igmenu, tramp2_insts) == IGM_ENTRYPOINT_CHEATS_OFF, "S
 #endif
 
 
+
+#ifndef __ASSEMBLER__
+_Static_assert(offsetof(t_igmenu, menu_kid_mode) == IGM_KID_MODE_OFF, "Kid flag offset mismatch");
+#endif

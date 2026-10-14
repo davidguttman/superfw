@@ -144,37 +144,46 @@ bool write_save_sram(const char *fn) {
   return f_close(&fd) == FR_OK;
 }
 
-bool compare_save_sram(const char *fn) {
+enum { SAVE_COMPARE_DIFFERENT, SAVE_COMPARE_SAME, SAVE_COMPARE_ERROR };
+static unsigned compare_save_sram_impl(const char *fn, bool checked) {
   FIL fd;
   FRESULT res = f_open(&fd, fn, FA_READ);
   if (res != FR_OK)
-    return false;
+    return checked && res != FR_NO_FILE && res != FR_NO_PATH ? SAVE_COMPARE_ERROR : SAVE_COMPARE_DIFFERENT;
 
+  FSIZE_t file_size = f_size(&fd);
+  unsigned compare_size = checked && file_size < SRAM_CHIP_SIZE ? file_size : SRAM_CHIP_SIZE;
   bool mism = false;
-  for (unsigned i = 0; i < SRAM_CHIP_SIZE && !mism; i += 1024) {
+  for (unsigned i = 0; i < compare_size && !mism; i += 1024) {
     UINT rdbytes = 0;
     uint8_t tmpbuf[1024];
-    res = f_read(&fd, tmpbuf, sizeof(tmpbuf), &rdbytes);
-    if (res != FR_OK || rdbytes == 0) {
+    unsigned toread = MIN(sizeof(tmpbuf), compare_size - i);
+    res = f_read(&fd, tmpbuf, toread, &rdbytes);
+    if (res != FR_OK || rdbytes != toread) {
       f_close(&fd);
-      return false;
+      return checked ? SAVE_COMPARE_ERROR : SAVE_COMPARE_DIFFERENT;
     }
 
     // Read SRAM and compare read values
     volatile uint8_t *sram_ptr = &SRAM_BASE_U8[i % SRAM_BANK_SIZE];
     unsigned bank = i / SRAM_BANK_SIZE;
     SRAM_MAP_BANK(bank);
-    for (unsigned j = 0; j < 1024; j++)
+    for (unsigned j = 0; j < toread; j++)
       if (tmpbuf[j] != sram_ptr[j])
         mism = true;
     set_supercard_mode(MAPPED_SDRAM, true, true);
   }
-  f_close(&fd);
+  FRESULT closed = f_close(&fd);
+  if (checked && closed != FR_OK) return SAVE_COMPARE_ERROR;
+  // Short imported/DirectSave files are valid, but need a full SRAM dump.
+  // Only declared EOF is accepted; premature reads and failed close stay errors.
+  if (checked && file_size < SRAM_CHIP_SIZE) mism = true;
 
   WRITE_LOG("Compared file '%s' to SRAM contents: %s", fn, mism ? "mismatch" : "identical");
 
-  return !mism;
+  return mism ? SAVE_COMPARE_DIFFERENT : SAVE_COMPARE_SAME;
 }
+bool compare_save_sram(const char *fn) { return compare_save_sram_impl(fn,false)==SAVE_COMPARE_SAME; }
 
 // Performs file rotation. Assumes that a ".tmp.sav" file exists.
 // - Unlink (N_backup+1) if present
@@ -182,36 +191,65 @@ bool compare_save_sram(const char *fn) {
 // - Rename .sav to .1.sav
 // - Rename .tmp.sav to .sav
 // - Unlink i-(N+1) if present
-bool rotate_savefile(const char *templ_fn, unsigned max_backups) {
+static bool rotate_savefile_impl(const char *templ_fn, unsigned max_backups, bool checked) {
   char tmpfn[MAX_FN_LEN], dstfn[MAX_FN_LEN];
 
   WRITE_LOG("Rotating save file '%s' (#backups: %d)", templ_fn, max_backups);
 
   // Backup renaming, f_rename doesn't like existing dest files tho.
   npf_snprintf(tmpfn, sizeof(tmpfn), "%s.%u.sav", templ_fn, max_backups+1);
-  f_unlink(tmpfn);
+  FRESULT res = f_unlink(tmpfn);
+  if (checked && res != FR_OK && res != FR_NO_FILE && res != FR_NO_PATH) return false;
 
   for (unsigned i = max_backups; i >= 1; i--) {
     npf_snprintf(dstfn, sizeof(dstfn), "%s.%u.sav", templ_fn, i+1);
     npf_snprintf(tmpfn, sizeof(tmpfn), "%s.%u.sav", templ_fn, i);
-    f_rename(tmpfn, dstfn);
+    res = f_rename(tmpfn, dstfn);
+    if (checked && res != FR_OK && res != FR_NO_FILE) return false;
   }
 
   // Rename the .sav to .1.sav
   npf_snprintf(dstfn, sizeof(dstfn), "%s.1.sav", templ_fn);
   npf_snprintf(tmpfn, sizeof(tmpfn), "%s.sav", templ_fn);
-  f_rename(tmpfn, dstfn);
+  res = f_rename(tmpfn, dstfn);
+  if (checked && res != FR_OK && res != FR_NO_FILE) return false;
 
   // Rename the .tmp.sav file to .sav
   npf_snprintf(dstfn, sizeof(dstfn), "%s.sav", templ_fn);
   npf_snprintf(tmpfn, sizeof(tmpfn), "%s.tmp.sav", templ_fn);
-  f_rename(tmpfn, dstfn);
+  res = f_rename(tmpfn, dstfn);
+  if (checked && res != FR_OK) return false;
 
   // Attempt to remove any overflowing backup file.
   npf_snprintf(tmpfn, sizeof(tmpfn), "%s.%u.sav", templ_fn, max_backups+1);
-  f_unlink(tmpfn);
+  res = f_unlink(tmpfn);
+  if (checked && res != FR_OK && res != FR_NO_FILE && res != FR_NO_PATH) return false;
 
   return true;
+}
+
+bool rotate_savefile(const char *templ_fn, unsigned max_backups) {
+  return rotate_savefile_impl(templ_fn, max_backups, false);
+}
+
+bool write_save_sram_rotate_checked(const char *templ_fn, unsigned max_backups) {
+  char tmpfn[MAX_FN_LEN];
+  if (strlen(templ_fn) >= sizeof(tmpfn) - 8 || max_backups > MAX_BACKUP_CNT) return false;
+  npf_snprintf(tmpfn, sizeof(tmpfn), "%s.tmp.sav", templ_fn);
+  /* IGM return can be the first save on a fresh card. Validate every parent;
+   * never treat an existing regular file or failed mkdir as a directory. */
+  for (char *p=tmpfn+1; (p=strchr(p,'/')); p++) {
+    *p=0;
+    FILINFO info; FRESULT r=f_stat(tmpfn,&info);
+    if (r==FR_NO_FILE || r==FR_NO_PATH) {
+      r=f_mkdir(tmpfn);
+      if (r==FR_EXIST) r=f_stat(tmpfn,&info);
+      else if (r==FR_OK) info.fattrib=AM_DIR;
+    }
+    *p='/';
+    if (r!=FR_OK || !(info.fattrib & AM_DIR)) return false;
+  }
+  return write_save_sram(tmpfn) && rotate_savefile_impl(templ_fn, MAX(2, max_backups), true);
 }
 
 // Performs a write to SD and rotates (renames) files as backup goes (see above).
@@ -243,7 +281,7 @@ bool write_save_sram_safe_overwrite(const char *templ_fn) {
 }
 
 // Writes a save game from SRAM using a pending file sentinel as input.
-unsigned flush_pending_sram() {
+static unsigned flush_pending_sram_impl(bool checked) {
   FIL fd;
   FRESULT res = f_open(&fd, PENDING_SAVE_FILEPATH, FA_READ);
   if (res != FR_OK)
@@ -256,7 +294,11 @@ unsigned flush_pending_sram() {
     f_close(&fd);
     return ERR_SAVE_FLUSH_NOSENTINEL;
   }
+  FRESULT closed = f_close(&fd);
+  if (checked && (closed != FR_OK || f_size(&fd) > sizeof(content) - 1 || rdbytes != f_size(&fd)))
+    return ERR_SAVE_FLUSH_NOSENTINEL;
   content[rdbytes] = 0;
+  if (checked && strlen(content) != rdbytes) return ERR_SAVE_FLUSH_NOSENTINEL;
 
   // Separate options using NULL.
   unsigned l = strlen(content);
@@ -270,7 +312,7 @@ unsigned flush_pending_sram() {
   for (unsigned i = strlen(content) + 1; i < l + 1; ) {
     if (!strncmp(&content[i], "backup_count=", 13))
       bkpn = &content[i + 13];
-    i += strlen(content) + 1;
+    i += strlen(&content[i]) + 1;
   }
 
   // Parse options.
@@ -279,7 +321,7 @@ unsigned flush_pending_sram() {
     backup_num = parseuint(bkpn);
 
   // Validate the filename! Should start with "/". Let the FatFS check it too.
-  if (savefn[0] != '/')
+  if (savefn[0] != '/' || (checked && (strlen(savefn) >= MAX_FN_LEN - 8 || backup_num > MAX_BACKUP_CNT)))
     return ERR_SAVE_FLUSH_NOSENTINEL;
 
   // Check if the save file exists and contains the same data.
@@ -288,19 +330,24 @@ unsigned flush_pending_sram() {
     strcpy(tmpfn, savefn);
     strcat(tmpfn, ".sav");
     // Do not write nor rotate backups if the SRAM did not change!
-    if (compare_save_sram(tmpfn))
+    unsigned compared=compare_save_sram_impl(tmpfn,checked);
+    if (compared==SAVE_COMPARE_ERROR) return ERR_SAVE_FLUSH_WRITEFAIL;
+    if (compared==SAVE_COMPARE_SAME)
       return 0;
   }
 
   // Create the base dir (since in some cases like /SAVES/ it won't exist).
-  create_basepath(savefn);
+  if (!checked) create_basepath(savefn);
 
   // Use the rotate function to ensure we write this properly.
-  if (!write_save_sram_rotate(savefn, backup_num))
+  if (!(checked ? write_save_sram_rotate_checked(savefn, backup_num) : write_save_sram_rotate(savefn, backup_num)))
     return ERR_SAVE_FLUSH_WRITEFAIL;
 
   return 0;
 }
+
+unsigned flush_pending_sram() { return flush_pending_sram_impl(false); }
+unsigned flush_pending_sram_checked() { return flush_pending_sram_impl(true); }
 
 // Writes/Clears a sentinel file to indicate that SRAM must be dumped and
 // stored during the next boot, to preserve the current game save storage.
@@ -327,9 +374,9 @@ bool program_sram_dump(const char *save_filename, unsigned backup_cnt) {
       return false;
     UINT wrbytes;
     FRESULT res = f_write(&fd, content, strlen(content), &wrbytes);
-    f_close(&fd);
+    FRESULT closed = f_close(&fd);
 
-    return FR_OK == res && wrbytes == strlen(content);
+    return FR_OK == res && closed == FR_OK && wrbytes == strlen(content);
   }
   return true;
 }

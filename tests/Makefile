@@ -41,7 +41,7 @@ kid_tests:
 	./kid_library_test.bin
 	uv run ../tools/kid-art.py --self-test ./kid_library_test.bin
 
-	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie -I../src -I.. -o kid_mode_test.bin kid_mode_test.c ../src/kid_mode.c
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie -I../src -I.. -ffunction-sections -fdata-sections -Wl,--gc-sections -o kid_mode_test.bin kid_mode_test.c ../src/kid_mode.c
 	./kid_mode_test.bin
 
 	# Actual menu launch path; drop unrelated UI sections before linking mocks.
@@ -56,3 +56,18 @@ loader_tests:
 	# Upstream fix_gba_header shifts a negative checksum; outside this I/O gate.
 	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined -fno-sanitize=shift --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -DFW_MAX_SIZE_KB=512 -DVERSION_WORD=21 -DVERSION_SLUG_WORD=0 -DFW_FLAVOUR='"SD"' -Wl,--gc-sections -o loader_read_test.bin loader_read_test.c
 	./loader_read_test.bin
+
+.PHONY: kid_return_tests
+kid_return_tests:
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-pie -no-pie -I../src -I.. -o kid_state_test.bin kid_state_test.c ../src/kid_state.c ../src/kid_mode.c
+	./kid_state_test.bin
+	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -Wl,--gc-sections -o kid_igmenu_test.bin kid_igmenu_test.c
+	./kid_igmenu_test.bin
+	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -Wl,--gc-sections -o kid_igmenu_mapping_test.bin kid_igmenu_mapping_test.c ../src/kid_state.c
+	./kid_igmenu_mapping_test.bin
+
+	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -Wl,--gc-sections -o kid_save_test.bin kid_save_test.c ../src/kid_state.c
+	./kid_save_test.bin
+
+	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -Wl,--gc-sections -o kid_pending_boot_test.bin kid_pending_boot_test.c ../src/kid_state.c
+	./kid_pending_boot_test.bin

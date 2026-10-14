@@ -1,6 +1,6 @@
 # Kid mode: agreed prototype design
 
-Status: design, not implemented or hardware verified.
+Status: implemented prototype; host/build and SuperCard-aware emulator checks verified. Physical hardware and game-specific compatibility remain unverified.
 
 ## Target and scope
 

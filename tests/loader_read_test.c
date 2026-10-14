@@ -5,7 +5,9 @@
 #include <sys/mman.h>
 #include "../src/loader.c"
 
-bool slowsd;
+bool slowsd, kid_boot_enabled;
+static unsigned history_commits;
+static bool history_error;
 uint8_t use_slowld, boot_bios_splash, use_fastew;
 uint8_t hotkey_combo, lang_id, anim_speed, backup_sram_default;
 const t_combo_key hotkey_list[13] = {{0}};
@@ -17,6 +19,10 @@ const uint32_t directsave_payload_size = sizeof(directsave_payload);
 static unsigned file_size, file_pos, read_calls, fail_read, short_read;
 static unsigned close_calls, launches, patches, payloads, completions, slow_copies;
 static bool seek_error, close_error, open_error, writable, sd_enabled;
+bool kid_last_write(const char *path) {
+  assert(!strcmp(path,"/game.gba")); assert(!launches && close_calls==1 && writable && sd_enabled);
+  history_commits++; return !history_error;
+}
 static uint8_t *const rom = (uint8_t *)GBA_ROM_BASE;
 
 static uint8_t file_byte(unsigned offset) { return (uint8_t)(offset * 7 + offset / 8192 + 3); }
@@ -80,7 +86,7 @@ static void progress(unsigned current, unsigned total) { if (current == 1 && tot
 static void reset_case(unsigned size, bool slow) {
   file_size = size; file_pos = read_calls = fail_read = short_read = 0;
   close_calls = launches = patches = payloads = completions = slow_copies = 0;
-  seek_error = close_error = open_error = false;
+  seek_error = close_error = open_error = kid_boot_enabled = history_error = false; history_commits=0;
   writable = sd_enabled = slowsd = true; use_slowld = slow;
   memset(rom, 0xa5, MAX_GBA_ROM_SIZE);
 }
@@ -104,6 +110,8 @@ int main(void) {
     MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0) != MAP_FAILED);
   assert(mmap((void*)0x04000000, 0x1000, PROT_READ|PROT_WRITE,
     MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0) != MAP_FAILED);
+
+  assert(mmap((void*)0x05000000,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)!=MAP_FAILED);
 
   /* FR_OK short mid-load must not patch/launch stale scratch bytes. */
   reset_case(20000, false); short_read = 2;
@@ -157,5 +165,20 @@ int main(void) {
   assert(preload_gba_rom("/game.gba", 256, &header) == ERR_LOAD_BADROM && close_calls == 1);
   reset_case(256, false); close_error = true;
   assert(preload_gba_rom("/game.gba", 256, &header) == ERR_LOAD_BADROM && close_calls == 1);
+  reset_case(16384,false); kid_boot_enabled=true; short_read=1;
+  expect_failed(file_size,NULL,NULL); assert(!history_commits);
+  reset_case(16384,false); kid_boot_enabled=true; history_error=true;
+  assert(load(file_size,NULL,NULL)==ERR_LOAD_KIDSTATE && !launches && history_commits==1);
+  reset_case(16384,false); kid_boot_enabled=true;
+  assert(load(file_size,NULL,NULL)==0 && launches==1 && history_commits==1);
+  /* Actual loader -> payload flag, DS/no-save pattern remains zero. */
+  reset_case(16384,false); kid_boot_enabled=true;
+  char state_path[256]={0};
+  load_ingame_menu(GBA_ROM_BASE+65536,262144,true,NULL,state_path,false,0);
+  t_igmenu *loaded=(t_igmenu*)(rom+65536);
+  assert(loaded->menu_kid_mode==1 && loaded->menu_use_directsave==1 && !loaded->savefile_pattern[0]);
+  kid_boot_enabled=false;
+  load_ingame_menu(GBA_ROM_BASE+65536,262144,false,NULL,state_path,false,0);
+  assert(!loaded->menu_kid_mode && !loaded->menu_use_directsave && !loaded->savefile_pattern[0]);
   puts("loader production-path exact-read/padding tests passed");
 }

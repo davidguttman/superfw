@@ -247,6 +247,7 @@ struct struct_t_patch;
 #define ERR_SAVE_CANTALLOC      0x4
 #define ERR_SAVE_CANTCOPY       0x5
 
+#define ERR_LOAD_KIDSTATE       0x6
 #define ERR_LOAD_BADROM         0x1
 #define ERR_LOAD_MENU           0x2
 #define ERR_NO_PAYLOAD_SPACE    0x3

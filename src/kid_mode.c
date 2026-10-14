@@ -1,6 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "kid_mode.h"
 #include "gbahw.h"
+#include "common.h"
+#include <string.h>
+bool kid_boot_enabled, kid_boot_bypass;
+bool kid_boot_pending_ok = true;
 
 bool kid_mode_detect(void) {
   FILINFO info;
@@ -33,4 +37,33 @@ void kid_picture_render(volatile uint16_t *frame, const uint16_t *art, bool vali
         ((y < 4 || y >= KID_ART_HEIGHT - 4 || x < 2 || x >= KID_ART_WIDTH / 2 - 2) ? 0x1313 : 0x1010);
       frame[(y + KID_ART_Y) * (SCREEN_WIDTH / 2) + KID_ART_X / 2 + x] = value;
     }
+}
+
+bool kid_member_valid(const char *path, FILINFO *rom_info) {
+  char sidecar[KID_PATH_BYTES]; FILINFO title;
+  return f_stat(path,rom_info)==FR_OK && !(rom_info->fattrib & AM_DIR) &&
+    rom_info->fsize>=sizeof(t_rom_header) && rom_info->fsize<=MAX_GBA_ROM_SIZE &&
+    kid_sidecar_path(path,"txt",sidecar) && f_stat(sidecar,&title)==FR_OK && !(title.fattrib & AM_DIR);
+}
+int kid_boot_select(const kid_library *library, bool held_b, bool pending_ok, const char **notice) {
+  bool attempted; unsigned attempt=kid_attempt_consume(&attempted);
+  if (attempt!=KID_STATE_MISSING) *notice="Could not remember your game";
+  bool bypass; unsigned skip=kid_skip_consume(&bypass);
+  if (skip==KID_STATE_ERROR || skip==KID_STATE_INVALID) *notice="Please choose a game";
+  if (!pending_ok) { *notice="Could not save. Ask a grown-up"; return -1; }
+  if (held_b || bypass || attempted) return -1;
+  char path[KID_PATH_BYTES]; unsigned read=kid_last_read(path);
+  if (read==KID_STATE_MISSING) return -1;
+  if (read!=KID_STATE_OK || library->io_error) {
+    *notice="Could not remember your game";
+    if (!kid_last_clear()) *notice="Could not remember. Ask a grown-up";
+    return -1;
+  }
+  for (unsigned i=0;i<library->count;i++) if (!strcmp(path,library->entries[i].path)) {
+    FILINFO info;
+    if (kid_member_valid(path,&info)) return i;
+    break;
+  }
+  if (!kid_last_clear()) *notice="Could not remember. Ask a grown-up";
+  return -1;
 }

@@ -73,6 +73,8 @@
 .globl spill_addr
 .globl savefile_pattern
 .globl savestate_pattern
+.globl ingame_kid_mode
+.globl ingame_ds_used
 
 def_symbol(ingame_menu):
   // Writes address 0x03007ffc (actually mirror 0x03fffffc) with the ingame
@@ -127,6 +129,10 @@ savefile_backups:      .word 0x0    // Fill the number of backups to preserve.
 
 savefile_pattern:      .fill 256, 1, 0          // File name pattern (NULL terminated)
 savestate_pattern:     .fill 256, 1, 0          // File name pattern (NULL terminated)
+ingame_kid_mode:       .word 0x0              // Runtime child-safe menu flag
+.if (ingame_kid_mode - ingame_menu) != IGM_KID_MODE_OFF
+  .error "Kid flag header offset mismatch"
+.endif
 
 
 // Necessary handlers for the SC driver

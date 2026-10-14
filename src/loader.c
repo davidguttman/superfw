@@ -34,6 +34,7 @@
 #include "util.h"
 #include "flash_mgr.h"
 #include "flash.h"
+#include "kid_mode.h"
 
 // Here we have the ROM loading routines.
 
@@ -144,6 +145,7 @@ void load_ingame_menu(
   igm->drv_rca = sc_rca();
   igm->menu_hotkey = hotk;                    // Configured hotkey
   igm->menu_lang = lang_id;                   // Use the current lang id
+  igm->menu_kid_mode = kid_boot_enabled;      // Never persisted to normal settings
   igm->menu_use_directsave = useds;           // DirectSave in use
   igm->menu_anim_speed = anim_speed;          // Menu animation speed
   igm->menu_font_base = base_addr + menu_size;// Base addr where the fonts live
@@ -357,6 +359,15 @@ unsigned load_gba_rom(
 
   // Fix header checksum unconditionally (just in case we boot to BIOS).
   fix_gba_header((uint16_t*)GBA_ROM_ADDR);
+
+  // Commit kid history only when all ROM reads/patching are complete. A failed
+  // load or record close/cleanup error retains the persistent attempt guard.
+  // Only a fully closed record AND removed guard permit the non-returning boot.
+  if (kid_boot_enabled) {
+    set_supercard_mode(MAPPED_SDRAM, true, true);
+    if (!kid_last_write(fn)) return ERR_LOAD_KIDSTATE;
+    set_supercard_mode(MAPPED_SDRAM, true, false);
+  }
 
   // Go ahead and load config in SRAM, if applicable.
   if (dsinfo)

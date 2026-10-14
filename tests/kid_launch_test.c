@@ -13,8 +13,11 @@ uint8_t autoload_default, autosave_default, rtcspeed_default, save_path_default;
 uint32_t rtcvalue_default;
 const t_igmenu ingame_menu_payload = {0};
 static bool have_database, have_cache, have_sidecar, have_save, fail_write, short_read, rom_unavailable;
-static bool per_rom, superfw_rom;
+static bool per_rom, superfw_rom, persistence_failure, missing_title;
+static unsigned persist_calls, clear_calls;
 static unsigned save_failure, preload_failure, patch_generations, save_calls, load_calls, reload_calls, restore_calls, db_reads;
+bool kid_last_stage(const char *path) { assert(!strcmp(path,"/Games/Puzzle.gba")); persist_calls++; assert(!save_calls); return !persistence_failure; }
+bool kid_last_clear(void) { clear_calls++; return true; }
 static t_patch selected_patch;
 static char expected_path[KID_PATH_BYTES];
 static unsigned expected_load, expected_save, expected_cheats;
@@ -29,8 +32,10 @@ void set_supercard_mode(unsigned mode, bool write, bool sd) { (void)mode; (void)
 unsigned font_block_size(void) { return 2048; }
 void font_restore_embedded(uint16_t *destination) { (void)destination; restore_calls++; }
 FRESULT f_stat(const TCHAR *path, FILINFO *info) {
-  assert(!strcmp(path, expected_path));
-  info->fattrib=0; info->fsize=65536;
+  bool title=!strcmp(path,"/Games/Puzzle.txt");
+  assert(title || !strcmp(path, expected_path));
+  info->fattrib=0; info->fsize=title ? 6 : 65536;
+  if (title && missing_title) return FR_NO_FILE;
   return rom_unavailable ? FR_DISK_ERR : FR_OK;
 }
 FRESULT f_open(FIL *file, const TCHAR *path, BYTE mode) {
@@ -41,6 +46,7 @@ FRESULT f_read(FIL *file, void *buffer, UINT amount, UINT *read) {
 }
 FRESULT f_close(FIL *file) { (void)file; return FR_OK; }
 unsigned preload_gba_rom(const char *path, uint32_t size, t_rom_header *header) {
+  if (kid_enabled) assert(persist_calls==1); /* guard precedes ANY ROM read */
   assert(!strcmp(path,expected_path)); assert(size==65536); memset(header,0,sizeof(*header));
   if (superfw_rom) memcpy(&header->data[SUPERFW_COMMENT_DOFFSET], "SUPERFW~DAVIDGF",16);
   return preload_failure;
@@ -73,6 +79,7 @@ void sram_filename_calc(const char *path, char *out, unsigned preference) {
 bool check_file_exists(const char *path) { assert(!strcmp(path,"/Games/Puzzle.sav")); return have_save; }
 unsigned prepare_savegame(t_sram_load_policy load, t_sram_save_policy save, EnumSavetype type, t_dirsave_info *info, const char *path) {
   (void)type; memset(info,0,sizeof(*info)); save_calls++;
+  if (kid_enabled) assert(persist_calls==1);
   assert(load==expected_load && save==expected_save); assert(!strcmp(path,"/Games/Puzzle.sav")); return save_failure;
 }
 unsigned load_gba_rom(const char *path, uint32_t size, const char *savefn, const t_patch *patch,
@@ -96,7 +103,7 @@ void kid_library_scan(kid_library *library, kid_scan_scratch *scratch) {
   strcpy(library->entries[1].path,expected_path); strcpy(library->entries[1].title,"Puzzle");
 }
 bool kid_sidecar_path(const char *path, const char *extension, char *out) {
-  assert(!strcmp(path,expected_path)); assert(!strcmp(extension,"bmp")); strcpy(out,"/Games/Puzzle.bmp"); return true;
+  assert(!strcmp(path,expected_path)); assert(!strcmp(extension,"bmp") || !strcmp(extension,"txt")); strcpy(out,!strcmp(extension,"bmp") ? "/Games/Puzzle.bmp" : "/Games/Puzzle.txt"); return true;
 }
 bool kid_art_load(const char *path, uint16_t *pixels, uint16_t *palette) {
   assert(!strcmp(path,"/Games/Puzzle.bmp")); pixels[0]=0x1414; palette[0]=31; return true;
@@ -105,6 +112,7 @@ static void reset_case(void) {
   strcpy(expected_path,"/Games/Puzzle.gba");
   memset(&spop,0,sizeof(spop)); memset((void*)kid_sdr,0,sizeof(*kid_sdr));
   kid_sdr->library.count=1; strcpy(kid_sdr->library.entries[0].path,expected_path);
+  kid_boot_pending_ok=true; persist_calls=clear_calls=0; persistence_failure=missing_title=false;
   kid_selected=0; kid_enabled=true; kid_assets_lost=false; kid_message=NULL;
   have_database=have_cache=have_sidecar=have_save=fail_write=short_read=rom_unavailable=per_rom=superfw_rom=false;
   save_failure=preload_failure=patch_generations=save_calls=load_calls=reload_calls=restore_calls=db_reads=0;
@@ -139,6 +147,9 @@ int main(void) {
   reset_case(); patcher_default=PatchNone; kid_launch(); assert(load_calls==1 && !patch_generations);
   reset_case(); have_cache=true; selected_patch.save_mode=SaveTypeNone; expected_load=SaveLoadDisable; expected_save=SaveDisable; expect_savefn=NULL; kid_launch(); assert(load_calls==1);
   reset_case(); kid_assets_lost=true; have_database=true; kid_launch(); assert(db_reads==0 && patch_generations==1 && load_calls==1);
+  reset_case(); kid_boot_pending_ok=false; kid_launch(); assert(!save_calls && !load_calls && !persist_calls);
+  reset_case(); missing_title=true; kid_launch(); assert(!save_calls && !load_calls && clear_calls);
+  reset_case(); persistence_failure=true; kid_launch(); assert(!save_calls && !load_calls && persist_calls && clear_calls);
   /* Marker-absent shared helper still honors upstream cheat/launch values. */
   reset_case(); kid_enabled=false; have_cache=true;
   t_rom_load_settings normal = { .patch_policy=PatchEngine, .use_igm=true, .use_rtc=true, .use_dsaving=false };

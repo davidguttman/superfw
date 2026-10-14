@@ -120,6 +120,7 @@ MENUFILES=src/ingame.S \
           src/cimpl.c \
           src/fonts/font_render.c \
           src/save.c \
+          src/kid_state.c \
           src/util.c \
           src/utf_util.c \
           src/fileutil.c \
@@ -142,6 +143,7 @@ INFILES=src/gba_ewram_crt0.S \
         src/menu.c \
         src/kid_library.c \
         src/kid_mode.c \
+        src/kid_state.c \
         src/recent.c \
         src/cheats.c \
         src/flash.c \
@@ -173,7 +175,7 @@ all:	$(FWBINFILES) $(BIEMUFILES) directsave.payload ingame_trampoline.payload
 	# Fix the header/checksum.
 	./tools/fw-fixer.py superfw.gba
 
-firmware.ewram.gba: $(INFILES) ingamemenu.payload superfw.dldi.payload directsave.payload ingame_trampoline.payload src/messages_data.h ldscripts/gba_ewram.ld.i
+firmware.ewram.gba: $(INFILES) ingamemenu.payload superfw.dldi.payload directsave.payload ingame_trampoline.payload src/messages_data.h src/kid_mode.h src/kid_state.h src/ingame.h ldscripts/gba_ewram.ld.i
 	# Build the actual firmware image
 	$(CC) $(CFLAGS) -o firmware.ewram.elf $(INFILES) -T ldscripts/gba_ewram.ld.i -nostartfiles -Wl,-Map=firmware.ewram.map -Wl,--print-memory-usage -fno-builtin
 	$(OBJCOPY) --output-target=binary firmware.ewram.elf firmware.ewram.gba
@@ -189,7 +191,7 @@ directsave.payload:	$(DIRECTSAVEFILES)
 			-nostartfiles -fno-builtin -Wl,-Map=directsave.map -Wl,--print-memory-usage
 	$(OBJCOPY) --output-target=binary directsave.elf directsave.payload
 
-ingamemenu.payload:	$(MENUFILES) src/menu_messages.h
+ingamemenu.payload:	$(MENUFILES) src/menu_messages.h src/ingame.h src/kid_state.h
 	# Build in-game menu
 	$(CC) $(INGAME_CFLAGS) -o ingamemenu.elf $(MENUFILES) -T ldscripts/gba_ingame.ld \
 			-nostartfiles -fno-builtin -Wl,-Map=firmware.ingame.map -Wl,--print-memory-usage

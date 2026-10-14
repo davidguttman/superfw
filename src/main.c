@@ -28,6 +28,7 @@
 #include "common.h"
 #include "fatfs/ff.h"
 #include "flash.h"
+#include "kid_mode.h"
 
 // Global variables
 FATFS sdfs;          // FatFS mounted filesystem
@@ -98,6 +99,10 @@ void init_sdcard_and_mount() {
 }
 
 void check_pending_saves() {
+  if (kid_boot_enabled) {
+    kid_boot_pending_ok = kid_pending_ready();
+    return;
+  }
   // Check if there's a pending save in the SRAM, and dump it.
   // TODO: add some key combo to skip this?
   if (FR_OK == f_stat(PENDING_SAVE_FILEPATH, NULL)) {
@@ -149,11 +154,14 @@ static int main_gba() {
   // This hangs on failure since it is fatal.
   init_sdcard_and_mount();
 
+  // Detect before the legacy pending-save path can remove a failed sentinel.
+  kid_boot_enabled = kid_mode_detect();
+  kid_boot_bypass = (~REG_KEYINPUT & KEY_BUTTB) != 0;
   // Check if we need to save SRAM before doing anything else.
   check_pending_saves();
 
   // Check if there's a pending SRAM test and perform it.
-  int sram_tres = check_peding_sram_test();
+  int sram_tres = kid_boot_pending_ok ? check_peding_sram_test() : 0;
 
   // Load settings files
   load_settings();

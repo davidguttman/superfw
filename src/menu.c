@@ -864,10 +864,17 @@ static void kid_launch(void) {
   /* ROM loading overwrites cartridge scratch. Keep the path in ordinary RAM. */
   char path[KID_PATH_BYTES];
   strcpy(path, kid_sdr->library.entries[kid_selected].path);
+  if (!kid_boot_pending_ok) { kid_message = "Could not save. Ask a grown-up"; return; }
+  /* Establish persistent failure protection before header/preload, patch
+   * generation, SRAM preparation, or any full ROM loading. */
+  if (!kid_last_stage(path)) {
+    kid_last_clear();
+    kid_message = "Could not remember. Ask a grown-up";
+    return;
+  }
   FILINFO info;
-  if (f_stat(path, &info) != FR_OK || (info.fattrib & AM_DIR) ||
-      info.fsize < sizeof(t_rom_header) || info.fsize > MAX_GBA_ROM_SIZE) {
-    kid_message = "That game is unavailable";
+  if (!kid_member_valid(path, &info)) {
+    kid_message = kid_last_clear() ? "That game is unavailable" : "Could not remember. Ask a grown-up";
     kid_reload(path);
     return;
   }
@@ -881,7 +888,7 @@ static void kid_launch(void) {
   memset(&spop.p.load.l, 0, sizeof(spop.p.load.l));
   t_load_gba_info *game = &spop.p.load.i;
   if (!prepare_gba_info(game, &settings, path, info.fsize, true) || is_superfw(&game->romh)) {
-    kid_message = "That game cannot play";
+    kid_message = kid_last_clear() ? "That game cannot play" : "Could not remember. Ask a grown-up";
     kid_reload(path);
     return;
   }
@@ -889,13 +896,13 @@ static void kid_launch(void) {
     (settings.patch_policy == PatchEngine && !game->patches_cache_found);
   if (need_cache && (!generate_patches_progress(path, info.fsize) ||
                     !prepare_gba_info(game, &settings, path, info.fsize, true))) {
-    kid_message = "Could not get game ready";
+    kid_message = kid_last_clear() ? "Could not get game ready" : "Could not remember. Ask a grown-up";
     kid_reload(path);
     return;
   }
   /* Selected Database/Engine must never silently downgrade to unpatched. */
   if (settings.patch_policy != PatchNone && !get_game_patch(game)) {
-    kid_message = "Could not get game ready";
+    kid_message = kid_last_clear() ? "Could not get game ready" : "Could not remember. Ask a grown-up";
     kid_reload(path);
     return;
   }
@@ -914,8 +921,10 @@ static void kid_launch(void) {
     set_supercard_mode(MAPPED_SDRAM, true, true);
     kid_assets_lost = true;
   }
-  (void)load_error; /* A successful launch never returns on hardware. */
-  kid_message = save_error ? "Could not open game save" : "Could not play that game";
+  /* A successful launch never returns on hardware. */
+  kid_message = !kid_last_clear() ? "Could not remember. Ask a grown-up" :
+    load_error == ERR_LOAD_KIDSTATE ? "Could not remember. Ask a grown-up" :
+    save_error ? "Could not open game save" : "Could not play that game";
   kid_reload(path);
 }
 
@@ -2187,7 +2196,8 @@ static void kid_render(volatile uint8_t *frame) {
     draw_central_text(">", frame, 220, 68);
     draw_central_text("Left / Right     A: Play", frame, 120, 128);
   }
-  const char *notice = kid_message ? kid_message :
+  const char *notice = !kid_boot_pending_ok ? "Could not save. Ask a grown-up" :
+    kid_message ? kid_message :
     kid_sdr->library.io_error ? "Some games could not be read" :
     kid_sdr->library.limited ? "Showing some of your games" : NULL;
   if (notice) draw_central_text_ovf(notice, frame, 120, 144, 228);
@@ -2265,7 +2275,7 @@ void menu_init(int sram_testres) {
   memset(&smenu, 0, sizeof(smenu));
   memset(&spop, 0, sizeof(spop));
 
-  kid_enabled = kid_mode_detect();
+  kid_enabled = kid_boot_enabled;
   if (kid_enabled) {
     autoload_default = autosave_default = 1;
     enable_cheats = 0;
@@ -2275,6 +2285,8 @@ void menu_init(int sram_testres) {
     reload_theme(2); /* Fixed kid palette, no persisted settings changes. */
     REG_WIN0H = REG_WIN0V = 0;
     kid_reload(NULL);
+    int startup = kid_boot_select(&kid_sdr->library, kid_boot_bypass, kid_boot_pending_ok, &kid_message);
+    if (startup >= 0) { kid_selected = startup; kid_launch(); }
     return; /* No browser/recent writes can overlap the live library. */
   }
 

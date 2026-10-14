@@ -4,6 +4,23 @@ SuperFW
 
 An alternative firmware for Supercard GBA flash carts (and derivatives/clones)
 
+
+## Kid-mode fork (prototype)
+
+This fork adds a child-friendly launcher for **GBA SP + SuperCard SD**. An empty
+`/.superfw/kidmode` file enables it; removing that file restores the normal UI.
+Games use matching `.txt` title and optional `.bmp` artwork sidecars. Kid mode
+boots the last-played game; hold **B** during startup for the picture picker.
+
+See [SD setup and controls](KID-MODE-SD.md). The default **L+R+Start** in-game
+menu offers **Keep playing** and **Choose another game** on supported games.
+Software/host and SuperCard-aware emulator checks have passed; physical cart
+behavior and game-specific compatibility are **not verified**. This is a
+prototype, not an upstream release. No games or commercial artwork are bundled.
+
+The upstream documentation and installation instructions below still apply.
+
+
 This project aims to provide a more modern and better firmware for Supercard
 flash carts (which are still widely used and very cheaply available). The goal
 is to add many features only present in more expensive or sophisticated flash

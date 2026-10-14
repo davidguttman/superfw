@@ -55,6 +55,9 @@ bool write_save_sram_safe_overwrite(const char *templ_fn);
 
 // Writes a save game from SRAM using a pending file sentinel as input.
 unsigned flush_pending_sram();
+/* Kid safety gate: propagate I/O/rotation failures, keep at least two backups. */
+unsigned flush_pending_sram_checked();
+bool write_save_sram_rotate_checked(const char *templ_fn, unsigned max_backups);
 
 // Writes/Clears a sentinel file to indicate that SRAM must be dumped and
 // stored during the next boot, to preserve the current game save storage.
