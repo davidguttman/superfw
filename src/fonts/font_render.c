@@ -109,6 +109,11 @@ static bool lookup_chptr(uint32_t code, t_char_render_info *chinfo) {
   return false;
 }
 
+void font_restore_embedded(uint16_t *destination) {
+  const uint16_t *source = (const uint16_t*)font_ascii_embedded;
+  for (unsigned i = 0; i < sizeof(font_ascii_embedded) / 2; i++) destination[i] = source[i];
+}
+
 unsigned font_block_size() {
   const t_charblock_header *chdat = (const t_charblock_header*)(font_base_addr);
   return chdat->data_size;

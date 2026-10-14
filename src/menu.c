@@ -24,6 +24,7 @@
 #include "fatfs/ff.h"
 #include "common.h"
 #include "settings.h"
+#include "kid_mode.h"
 #include "util.h"
 #include "utf_util.h"
 #include "fonts/font_render.h"
@@ -410,6 +411,30 @@ _Static_assert (sizeof(t_sdram_state) <= 14.5*1024*1024, "scratch SDRAM doesn't 
 t_sdram_state *sdr_state = (t_sdram_state*)0x08000000;
 uint8_t *hiscratch = (uint8_t*)ROM_HISCRATCH_U8;
 
+/* Overlay only the first 2MiB; no byte-writing FatFs object lives here. */
+typedef struct {
+  kid_library library;
+  uint16_t pixels[KID_ART_WORDS];
+  uint16_t palette[KID_ART_COLORS];
+} kid_sdram_state;
+_Static_assert(sizeof(kid_sdram_state) <= scratch_mem_size, "kid scratch fits");
+static kid_sdram_state * const kid_sdr = (kid_sdram_state*)0x08000000;
+static bool kid_enabled, kid_art_valid, kid_assets_lost;
+static unsigned kid_selected;
+static const char *kid_message;
+static void kid_reload(const char *selected_path) {
+  kid_scan_scratch scratch; /* Ordinary EWRAM: FatFs writes bytes. */
+  kid_library_scan(&kid_sdr->library, &scratch);
+  kid_selected = 0;
+  for (unsigned i = 0; selected_path && i < kid_sdr->library.count; i++)
+    if (!strcmp(selected_path, kid_sdr->library.entries[i].path)) kid_selected = i;
+  kid_art_valid = false;
+  if (kid_sdr->library.count &&
+      kid_sidecar_path(kid_sdr->library.entries[kid_selected].path, "bmp", scratch.sidecar))
+    kid_art_valid = kid_art_load(scratch.sidecar, kid_sdr->pixels, kid_sdr->palette);
+}
+
+
 typedef struct {
   uint16_t x, y;
   unsigned tn;
@@ -480,7 +505,7 @@ static void loadrom_progress(unsigned done, unsigned total) {
   dma_memset16(&frame[0], dup8(BG_COLOR), SCREEN_WIDTH*SCREEN_HEIGHT/2);
 
   // Render a simple progress bar
-  unsigned prog = done * 200 / total;
+  unsigned prog = kid_progress_pixels(done, total);
   for (unsigned i = 76; i < 84; i++)
     dma_memset16(&frame[SCREEN_WIDTH * i + 20], dup8(FG_COLOR), prog/2);
 
@@ -514,8 +539,13 @@ bool generate_patches_progress(const char *fn, unsigned fs) {
     for (unsigned j = 0; j < max_hiscratch && i + j < fs; j += 4096) {
       UINT rdbytes;
       uint32_t tmp[4096/4];
-      if (FR_OK != f_read(&fd, tmp, sizeof(tmp), &rdbytes))
+      unsigned readsize = MIN(sizeof(tmp), fs - i - j);
+      if (FR_OK != f_read(&fd, tmp, readsize, &rdbytes) || rdbytes != readsize) {
+        f_close(&fd);
         return false;
+      }
+      /* DMA is word-sized, safely pad the final short read in EWRAM. */
+      memset((uint8_t*)tmp + readsize, 0, sizeof(tmp) - readsize);
 
       set_supercard_mode(MAPPED_SDRAM, true, false);
       dma_memcpy32(&hiscratch[j], tmp, sizeof(tmp)/4);
@@ -700,7 +730,8 @@ static bool prepare_gba_info(
     info->romh.version
   };
   set_supercard_mode(MAPPED_SDRAM, true, false);
-  info->patches_datab_found = patchmem_lookup(gamecode, (uint8_t*)ROM_PATCHDB_U8, &info->patches_datab);
+  info->patches_datab_found = !(kid_enabled && kid_assets_lost) &&
+    patchmem_lookup(gamecode, (uint8_t*)ROM_PATCHDB_U8, &info->patches_datab);
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
   if (!info->patches_datab_found)
@@ -805,6 +836,88 @@ static void prepare_gba_settings(t_load_gba_lcfg *data, bool uses_dsaving, uint3
   data->rtcval = rtcts;
 }
 
+
+/* Both picker and normal popup use exactly the upstream save/ROM engine. */
+static unsigned launch_prepared_gba(unsigned *save_error) {
+  const t_patch *p = get_game_patch(&spop.p.load.i);
+  EnumSavetype st = p ? p->save_mode : SaveTypeNone;
+  t_dirsave_info dsinfo;
+  *save_error = prepare_savegame(
+    spop.p.load.l.sram_load_type, spop.p.load.l.sram_save_type,
+    st, &dsinfo, spop.p.load.l.savefn);
+  if (*save_error) return 0;
+  t_rtc_info rtci = {
+    .timestamp = spop.p.load.l.rtcval,
+    .ts_step = rtcspeed_default
+  };
+  return load_gba_rom(
+    spop.p.load.i.romfn, spop.p.load.i.romfs,
+    spop.p.load.l.sram_save_type == SaveDisable ? NULL : spop.p.load.l.savefn, p,
+    spop.p.load.l.sram_save_type == SaveDirect ? &dsinfo : NULL,
+    spop.p.load.i.ingame_menu_enabled,
+    spop.p.load.i.rtc_patch_enabled ? &rtci : NULL,
+    spop.p.load.l.use_cheats ? spop.p.load.l.cheats_size : 0,
+    loadrom_progress);
+}
+
+static void kid_launch(void) {
+  /* ROM loading overwrites cartridge scratch. Keep the path in ordinary RAM. */
+  char path[KID_PATH_BYTES];
+  strcpy(path, kid_sdr->library.entries[kid_selected].path);
+  FILINFO info;
+  if (f_stat(path, &info) != FR_OK || (info.fattrib & AM_DIR) ||
+      info.fsize < sizeof(t_rom_header) || info.fsize > MAX_GBA_ROM_SIZE) {
+    kid_message = "That game is unavailable";
+    kid_reload(path);
+    return;
+  }
+  t_rom_load_settings settings = {
+    .patch_policy = patcher_default, .use_igm = ingamemenu_default,
+    .use_rtc = rtcpatch_default, .use_dsaving = autosave_prefer_ds
+  };
+  t_rom_launch_settings launch = { .use_cheats = false, .rtcts = rtcvalue_default };
+  load_rom_settings(path, &settings, &launch);
+  /* No cheat loading: availability calculation must not see stale sizes. */
+  memset(&spop.p.load.l, 0, sizeof(spop.p.load.l));
+  t_load_gba_info *game = &spop.p.load.i;
+  if (!prepare_gba_info(game, &settings, path, info.fsize, true) || is_superfw(&game->romh)) {
+    kid_message = "That game cannot play";
+    kid_reload(path);
+    return;
+  }
+  bool need_cache = (settings.patch_policy == PatchAuto && !get_game_patch(game)) ||
+    (settings.patch_policy == PatchEngine && !game->patches_cache_found);
+  if (need_cache && (!generate_patches_progress(path, info.fsize) ||
+                    !prepare_gba_info(game, &settings, path, info.fsize, true))) {
+    kid_message = "Could not get game ready";
+    kid_reload(path);
+    return;
+  }
+  /* Selected Database/Engine must never silently downgrade to unpatched. */
+  if (settings.patch_policy != PatchNone && !get_game_patch(game)) {
+    kid_message = "Could not get game ready";
+    kid_reload(path);
+    return;
+  }
+  const t_patch *patch = get_game_patch(game);
+  sram_filename_calc(path, spop.p.load.l.savefn, save_path_default);
+  prepare_gba_settings(&spop.p.load.l, game->use_dsaving, launch.rtcts,
+                       patch && patch->save_mode == SaveTypeNone);
+  unsigned save_error;
+  unsigned load_error = launch_prepared_gba(&save_error);
+  if (!save_error) {
+    /* A failed large-ROM read may have destroyed fonts and PatchDB. Restore
+     * a valid resident font pack; future Auto uses engine caches, never an
+     * overwritten database. The loader always copies fonts from this slot. */
+    set_supercard_mode(MAPPED_SDRAM, true, false);
+    font_restore_embedded((uint16_t*)ROM_FONTBASE_U8);
+    set_supercard_mode(MAPPED_SDRAM, true, true);
+    kid_assets_lost = true;
+  }
+  (void)load_error; /* A successful launch never returns on hardware. */
+  kid_message = save_error ? "Could not open game save" : "Could not play that game";
+  kid_reload(path);
+}
 
 static void browser_open_gba(const char *fn, uint32_t fs, bool prompt_patchgen) {
   if (fs > MAX_GBA_ROM_SIZE) {
@@ -2058,9 +2171,32 @@ static const struct {
 
 // Renders the menu. Arg0 represents the frame count difference with the
 // previous rendered frame (for animations and similar stuff).
+static void kid_render(volatile uint8_t *frame) {
+  bool have_game = kid_sdr->library.count != 0;
+  kid_picture_render((volatile uint16_t*)frame, kid_sdr->pixels, have_game && kid_art_valid);
+  if (have_game && kid_art_valid)
+    dma_memcpy16(&MEM_PALETTE[KID_ART_PALETTE_FIRST], kid_sdr->palette, KID_ART_COLORS);
+  REG_WIN0H = REG_WIN0V = 0;
+  if (!have_game) {
+    draw_central_text(kid_sdr->library.io_error ? "Could not read your games" : "No games here yet", frame, 120, 64);
+    draw_central_text("Ask a grown-up for help", frame, 120, 88);
+  } else {
+    draw_central_text_ovf(kid_sdr->library.entries[kid_selected].title, frame, 120, 4, 220);
+    if (!kid_art_valid) draw_central_text("Let's play!", frame, 120, 68);
+    draw_central_text("<", frame, 20, 68);
+    draw_central_text(">", frame, 220, 68);
+    draw_central_text("Left / Right     A: Play", frame, 120, 128);
+  }
+  const char *notice = kid_message ? kid_message :
+    kid_sdr->library.io_error ? "Some games could not be read" :
+    kid_sdr->library.limited ? "Showing some of your games" : NULL;
+  if (notice) draw_central_text_ovf(notice, frame, 120, 144, 228);
+}
+
 void menu_render(unsigned fcnt) {
   objnum = 0;
   volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
+  if (kid_enabled) { kid_render(frame); return; }
 
   // Render the tab menu on top (rows 0..15), highlighting the selected option
   dma_memset16(&frame[0], dup8(FG_COLOR), SCREEN_WIDTH*16/2);
@@ -2128,6 +2264,19 @@ void menu_init(int sram_testres) {
   // Reset to ROM browser and SD card root.
   memset(&smenu, 0, sizeof(smenu));
   memset(&spop, 0, sizeof(spop));
+
+  kid_enabled = kid_mode_detect();
+  if (kid_enabled) {
+    autoload_default = autosave_default = 1;
+    enable_cheats = 0;
+    backup_sram_default = MAX(2, MIN(MAX_BACKUP_CNT, backup_sram_default));
+    kid_assets_lost = false;
+    kid_message = sram_testres > 0 ? "Please ask a grown-up for help" : NULL;
+    reload_theme(2); /* Fixed kid palette, no persisted settings changes. */
+    REG_WIN0H = REG_WIN0V = 0;
+    kid_reload(NULL);
+    return; /* No browser/recent writes can overlap the live library. */
+  }
 
   // Reset the file browser as well.
   strcpy(smenu.browser.cpath, "/");
@@ -2414,15 +2563,8 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       if (recent_menu)
         insert_recent_flush(spop.p.load.i.romfn, FLAG_RECENT_SD);
 
-      // Honor load.patch_type.
-      const t_patch *p = get_game_patch(&spop.p.load.i);
-      EnumSavetype st = p ? p->save_mode : SaveTypeNone;
-
-      // Prepare the savegame (load and store stuff, directsave...)
-      t_dirsave_info dsinfo;
-      unsigned errsave = prepare_savegame(
-        spop.p.load.l.sram_load_type, spop.p.load.l.sram_save_type,
-        st, &dsinfo, spop.p.load.l.savefn);
+      unsigned errsave;
+      unsigned err = launch_prepared_gba(&errsave);
       if (errsave) {
         unsigned errmsg = (errsave == ERR_SAVE_BADSAVE)   ? MSG_ERR_SAVERD :
                           (errsave == ERR_SAVE_CANTALLOC) ? MSG_ERR_SAVEPR :
@@ -2431,24 +2573,9 @@ static void keypress_popup_loadgba(unsigned newkeys) {
         spop.alert_msg = msgs[lang_id][errmsg];
         return;
       }
-
-      t_rtc_info rtci = {
-        .timestamp = spop.p.load.l.rtcval,
-        .ts_step = rtcspeed_default
-      };
-
-      unsigned err = load_gba_rom(
-        spop.p.load.i.romfn, spop.p.load.i.romfs,
-        spop.p.load.l.sram_save_type == SaveDisable ? NULL : spop.p.load.l.savefn, p,
-        spop.p.load.l.sram_save_type == SaveDirect ? &dsinfo : NULL,
-        spop.p.load.i.ingame_menu_enabled,
-        spop.p.load.i.rtc_patch_enabled ? &rtci : NULL,
-        spop.p.load.l.use_cheats ? spop.p.load.l.cheats_size : 0,
-        loadrom_progress);
       if (err) {
-        // Show any errors that might have happened!
         spop.alert_msg = msgs[lang_id][MSG_ERR_READ];
-        // TODO: We cannot (in many cases) continue since we trash the SDRAM!
+        // Upstream normal mode cannot always recover overwritten SDRAM.
       }
     }
   }
@@ -3198,6 +3325,16 @@ static void keypress_menu_info(unsigned newkeys) {
 
 
 void menu_keypress(unsigned newkeys) {
+  if (kid_enabled) {
+    unsigned action = kid_picker_input(newkeys, kid_sdr->library.count, &kid_selected);
+    if (action == KID_INPUT_CHANGED) {
+      char artpath[KID_PATH_BYTES];
+      kid_message = NULL;
+      kid_art_valid = kid_sidecar_path(kid_sdr->library.entries[kid_selected].path, "bmp", artpath) &&
+        kid_art_load(artpath, kid_sdr->pixels, kid_sdr->palette);
+    } else if (action == KID_INPUT_PLAY) kid_launch();
+    return;
+  }
   if (spop.alert_msg) {
     // Modal message pop up!
     if (newkeys & (KEY_BUTTA | KEY_BUTTB))

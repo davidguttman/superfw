@@ -1,9 +1,49 @@
 # Kid-mode SD library and artwork format
 
-This first prototype slice implements readers and host verification only. It
-does **not** yet enable kid mode, change boot/menu behavior, launch games, track
-last-played games, or alter in-game controls. No physical SuperCard SD/GBA SP
-verification has been performed. Firmware does not decode PNG or JPEG.
+This prototype now includes the picture picker and upstream GBA launch path.
+It does **not** yet track last-played games, autostart, or simplify in-game
+controls (these are the next slice). No physical SuperCard SD/GBA SP verification
+has been performed. Firmware does not decode PNG or JPEG.
+
+## Enable the picture picker
+
+Create a **regular empty file** at `/.superfw/kidmode` on the card. A directory,
+nonempty file, missing marker, or unsuccessful marker stat does not enable it.
+Remove the marker to return to the ordinary upstream menu at next boot. The
+marker is read once at menu initialization; firmware never writes normal config
+files to enable this mode.
+
+The picker shows one 160×104 picture (or placeholder), its friendly title, and
+left/right controls. **Left/Right** wraps through the alphabetically sorted
+library; **A** plays. Other buttons have no picker actions or normal-menu escape.
+Navigation wins over simultaneous A, so a newly selected unseen game never
+launches. Empty libraries stay in a friendly screen. Partial/traversal-limited
+libraries and read errors retain available games and show a brief notice.
+
+Launch keeps upstream patch selection, save filename calculation, per-ROM RTC,
+and supported direct-saving preferences. Runtime autoload/autosave are enabled,
+cheats are never read or applied, and backups are at least two (at most upstream
+sixteen). These overrides are **not persisted**. Missing Auto/Engine patches are
+generated and reloaded silently. An unavailable explicitly selected Database
+patch, generation failure, header/read failure, or save preparation error leaves
+the child in the picker; no unsafe unpatched fallback is used. A curated ROM
+recognized as SuperFW is rejected rather than opening the ordinary firmware UI.
+Pending SRAM handling still runs upstream before this menu; its startup error
+handling is not changed by this slice.
+
+A failed ROM load can overwrite the library, artwork, fonts, and patch database.
+The selected path is retained in ordinary RAM; firmware rescans and reloads its
+artwork on failure. It restores the small resident font pack (non-ASCII titles
+may show replacement glyphs until reboot) and does not parse a possibly damaged
+PatchDB on further attempts. Auto then uses or generates an engine cache;
+explicit Database selection may require a reboot. The normal marker-absent
+menu/launch path keeps its upstream behavior except shared progress/patch-read
+robustness fixes.
+
+**Prototype boundary:** the upstream game-dependent in-game menu is still used
+when its actual IRQ hook support and per-ROM settings allow it. Its technical
+controls are not yet simplified or child-restricted; do not treat this slice as
+the complete child-safe design.
 
 ## Curated library
 
@@ -44,7 +84,7 @@ Readers use read-only FatFs calls only.
   A title-sidecar directory is not an opt-in file. No writes are performed.
 
 `kid_library.limited` reports a depth/path/directory/item/game bound hit.
-The future picker should handle both empty and partial libraries explicitly.
+The picker handles both empty and partial libraries explicitly.
 
 ## Artwork
 
@@ -81,7 +121,9 @@ and must not be copied to VRAM or displayed until the reader returns `true`.
 
 The fixed library occupies **20490 bytes**, with explicit halfword entry copies
 and 16-bit metadata suitable for mapped cartridge scratch SDRAM. Selected artwork
-needs **16640 pixel bytes + 440 palette bytes**, also halfword-written. There are
+needs **16640 pixel bytes + 440 palette bytes**, also halfword-written. Combined
+picker cartridge scratch is **37570 bytes**, overlaid within the first 2MiB at
+`0x08000000`, with font storage left at `0x08e80000`. There are
 no large static firmware allocations. The small `kid_scan_scratch` structure
 (**1456 bytes** with the current ARM FatFs configuration) must reside in
 ordinary EWRAM: FatFs/string code writes bytes there, which cannot
@@ -89,6 +131,14 @@ be directed at the cartridge's 16-bit bus. Reuse this scratch after scanning.
 FatFs `FIL` and a 160-byte artwork row buffer are temporary ordinary-RAM stack
 objects. Caller owns mapping/lifetime of these buffers; normal ROM loading can
 overwrite them after the selected path has been copied to ordinary RAM.
+
+The marker/input/render tests use production `kid_mode.c`; the launch harness
+includes the actual `menu.c` launch functions with engine/I/O doubles and
+simulates cartridge scratch overwrite on load failure. It checks cache refresh,
+patch-policy failures, SRAM-save ordering, RTC/directsave preferences, cheats
+zero, and actual IRQ hook availability. Its ASan settings disable global roots
+for section GC and fake-stack instrumentation for upstream GCC nested callbacks.
+The library/input/render tests keep their ordinary ASan/UBSan instrumentation.
 
 Standalone ARM7 Thumb compilation with `-Os -fno-builtin` measured **2178 bytes
 of text, zero data/BSS** for this reader module. Compiler stack estimates were

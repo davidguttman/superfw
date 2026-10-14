@@ -205,8 +205,40 @@ unsigned preload_gba_rom(const char *fn, uint32_t fs, t_rom_header *romh) {
   UINT rdbytes;
   bool err = (FR_OK != f_read(&fd, romh, sizeof(*romh), &rdbytes) || rdbytes != sizeof(*romh));
 
-  f_close(&fd);
+  if (f_close(&fd) != FR_OK)
+    err = true;
   return err ? ERR_LOAD_BADROM : 0;
+}
+
+// Read only real ROM bytes. Rounded ROM space is initialized padding, not an
+// expected short read. Reject incomplete reads before touching SDRAM.
+static NOINLINE bool load_rom_chunk(FIL *fd, uint32_t offset, uint32_t fs, unsigned count) {
+  uint32_t tmp[LOAD_BS/4];
+  unsigned expected = offset < fs ? MIN(count, fs - offset) : 0;
+  UINT rdbytes;
+  if (expected && (f_read(fd, tmp, expected, &rdbytes) != FR_OK || rdbytes != expected))
+    return false;
+
+  // Cartridge SDRAM requires at least halfword writes. Initialize the final
+  // word too; neither DMA nor the 32-byte slow-copy loop may read garbage.
+  // Gap boundaries are KB-aligned, so this padding cannot overwrite payloads.
+  unsigned copy_size = ROUND_UP2(count, 4);
+  uint8_t *bytes = (uint8_t*)tmp;
+  memset(bytes + expected, 0, copy_size - expected);
+
+  uint8_t *dst = &GBA_ROM_ADDR[offset];
+  unsigned bulk = use_slowld ? (count & ~31u) : (count & ~3u);
+  set_supercard_mode(MAPPED_SDRAM, true, false);
+  if (bulk) {
+    if (use_slowld)
+      rom_copy_write16(dst, tmp, bulk);
+    else
+      dma_memcpy32(dst, tmp, bulk / 4);
+  }
+  for (unsigned i = bulk; i < copy_size; i += 2)
+    *(volatile uint16_t*)&dst[i] = bytes[i] | ((uint16_t)bytes[i+1] << 8);
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+  return true;
 }
 
 NOINLINE
@@ -281,59 +313,32 @@ unsigned load_gba_rom(
   // Honor fast loading (switch mirror if appropriate)
   slowsd = use_slowld;
 
-  uint8_t *ptr = (uint8_t*)(GBA_ROM_ADDR);
   for (uint32_t offset = 0; offset < gap_start; offset += LOAD_BS, steps++) {
     if (progress && (steps & (31)) == 0)
       progress(steps, load_steps);
 
     unsigned toread = MIN(LOAD_BS, gap_start - offset);
-    UINT rdbytes;
-    uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes)) {
-      slowsd = true;
-      f_close(&fd);
-      return ERR_LOAD_BADROM;
-    }
-
-    set_supercard_mode(MAPPED_SDRAM, true, false);
-    if (use_slowld)
-      rom_copy_write16(&ptr[offset], tmp, toread);
-    else
-      dma_memcpy32(&ptr[offset], tmp, toread/4);
-    set_supercard_mode(MAPPED_SDRAM, true, true);
+    if (!load_rom_chunk(&fd, offset, fs, toread))
+      goto load_error;
   }
   // Skip over the gap
-  if (FR_OK != f_lseek(&fd, gap_end)) {
-    slowsd = true;
-    f_close(&fd);
-    return ERR_LOAD_BADROM;
-  }
+  if (FR_OK != f_lseek(&fd, gap_end))
+    goto load_error;
   for (uint32_t offset = gap_end; offset < fs; offset += LOAD_BS, steps++) {
     if (progress && (steps & (31)) == 0)
       progress(steps, load_steps);
 
     unsigned toread = MIN(LOAD_BS, fs - offset);
-    UINT rdbytes;
-    uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes)) {
-      slowsd = true;
-      f_close(&fd);
-      return ERR_LOAD_BADROM;
-    }
-
-    set_supercard_mode(MAPPED_SDRAM, true, false);
-    if (use_slowld)
-      rom_copy_write16(&ptr[offset], tmp, toread);
-    else
-      dma_memcpy32(&ptr[offset], tmp, toread/4);
-    set_supercard_mode(MAPPED_SDRAM, true, true);
+    if (!load_rom_chunk(&fd, offset, fs, toread))
+      goto load_error;
   }
-  progress(1, 1);  // Mark as complete
 
   slowsd = true;
 
-  // Close the file, not super necessary really :P
-  f_close(&fd);
+  if (f_close(&fd) != FR_OK)
+    return ERR_LOAD_BADROM;
+  if (progress)
+    progress(1, 1);  // Mark as complete only after successful I/O.
 
   // Proceed to patch the ROM
   set_supercard_mode(MAPPED_SDRAM, true, false);
@@ -364,6 +369,12 @@ unsigned load_gba_rom(
   launch_reset(boot_bios_splash, use_fastew);
 
   return 0;
+
+load_error:
+  slowsd = true;
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+  f_close(&fd);
+  return ERR_LOAD_BADROM;
 }
 
 // Flashes a game to NOR patching it as necessary. This includes DirSav as well as IGM.

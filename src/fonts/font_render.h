@@ -22,6 +22,9 @@
 // Size (in bytes) of the font graphs DB
 unsigned font_block_size();
 
+/* Restore a valid small font pack after a failed ROM load destroys SDRAM. */
+void font_restore_embedded(uint16_t *destination);
+
 // Returns the number of unicode characters in an encoded utf-8 buffer.
 unsigned utf8_strlen(const char *s);
 
