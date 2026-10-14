@@ -169,11 +169,14 @@ bool kid_art_load(const char *path, uint16_t pixels[KID_ART_WORDS], uint16_t pal
   uint8_t header[54], row[KID_ART_WIDTH];
   if (!read_exact(&file,header,sizeof(header))) goto done;
   uint32_t colors=u32(header+46), offset=u32(header+10), height=u32(header+22);
-  const unsigned image_bytes=KID_ART_WIDTH*KID_ART_HEIGHT;
+  bool topdown = height == (uint32_t)-KID_ART_HEIGHT || height == (uint32_t)-KID_ART_LEGACY_HEIGHT;
+  unsigned rows = topdown ? 0u-height : height;
+  if (rows != KID_ART_HEIGHT && rows != KID_ART_LEGACY_HEIGHT) goto done;
+  const unsigned image_bytes=KID_ART_WIDTH*rows;
   /* Narrow BMP dialect deliberately rejects arbitrary DIBs, gaps, RLE,
    * 256-entry palettes, and trailing data. Arithmetic is bounded first. */
   if (header[0]!='B' || header[1]!='M' || u32(header+6) || u32(header+14)!=40 ||
-      u32(header+18)!=KID_ART_WIDTH || (height != KID_ART_HEIGHT && height != (uint32_t)-KID_ART_HEIGHT) ||
+      u32(header+18)!=KID_ART_WIDTH ||
       u16(header+26)!=1 || u16(header+28)!=8 || u32(header+30) ||
       !colors || colors>KID_ART_COLORS || offset != 54+4*colors ||
       f_size(&file) != offset+image_bytes || u32(header+2) != offset+image_bytes ||
@@ -185,7 +188,7 @@ bool kid_art_load(const char *path, uint16_t pixels[KID_ART_WORDS], uint16_t pal
   /* Validate every index before touching outputs. Outputs remain scratch:
    * a subsequent I/O failure may still leave partial data, never VRAM. */
   if (f_lseek(&file,offset) != FR_OK) goto done;
-  for (unsigned y=0; y<KID_ART_HEIGHT; y++) {
+  for (unsigned y=0; y<rows; y++) {
     if (!read_exact(&file,row,sizeof(row))) goto done;
     for (unsigned x=0; x<KID_ART_WIDTH; x++) if (row[x]>=colors) goto done;
   }
@@ -196,9 +199,13 @@ bool kid_art_load(const char *path, uint16_t pixels[KID_ART_WORDS], uint16_t pal
     palette[i]=(color[2]>>3) | ((color[1]>>3)<<5) | ((color[0]>>3)<<10);
   }
   if (f_lseek(&file,offset) != FR_OK) goto done;
-  for (unsigned y=0; y<KID_ART_HEIGHT; y++) {
+  /* Transitional legacy bars use the reserved UI background, not an artwork
+   * palette slot (all 220 entries may be occupied). Halfword stores only. */
+  if (rows != KID_ART_HEIGHT)
+    for (unsigned i=0; i<KID_ART_WORDS; i++) pixels[i]=0x1111;
+  for (unsigned y=0; y<rows; y++) {
     if (!read_exact(&file,row,sizeof(row))) goto done;
-    unsigned out_y=height == KID_ART_HEIGHT ? KID_ART_HEIGHT-1-y : y;
+    unsigned out_y=(KID_ART_HEIGHT-rows)/2 + (topdown ? y : rows-1-y);
     for (unsigned x=0; x<KID_ART_WIDTH; x+=2) {
       /* Recheck on second pass too; never output reserved UI indices. */
       if (row[x]>=colors || row[x+1]>=colors) goto done;

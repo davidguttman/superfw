@@ -56,13 +56,14 @@ int main(void) {
   assert(kid_progress_pixels(50, 100) == 100);
 
   struct { uint16_t before; uint16_t frame[240*160/2]; uint16_t after; } screen;
+  assert(KID_ART_HEIGHT == 160 && KID_ART_X == 0 && KID_ART_Y == 0);
   uint16_t art[KID_ART_WORDS];
   for (unsigned i = 0; i < KID_ART_WORDS; i++) art[i] = 0x1514;
   screen.before = screen.after = 0xabba;
   kid_picture_render(screen.frame, art, true);
   for (unsigned y = 0; y < 160; y++)
     for (unsigned x = 0; x < 240; x += 2) {
-      uint16_t expected = (y >= KID_ART_Y && y < KID_ART_Y+104 && x >= KID_ART_X && x < KID_ART_X+160) ? 0x1514 : 0x1111;
+      uint16_t expected = (x < 160) ? 0x1514 : 0x1111;
       assert(screen.frame[(y*240+x)/2] == expected);
     }
   assert(screen.before == 0xabba && screen.after == 0xabba);

@@ -23,6 +23,31 @@ unsigned kid_picker_input(unsigned keys, unsigned count, unsigned *selected) {
   return keys & KEY_BUTTA ? KID_INPUT_PLAY : KID_INPUT_NONE;
 }
 
+const char *kid_text_line(const char *text, unsigned width,
+                         unsigned (*cap)(const char *, unsigned),
+                         char line[KID_TITLE_BYTES]) {
+  while (*text == ' ') text++;
+  unsigned fit = cap(text, width);
+  if (fit >= KID_TITLE_BYTES) {
+    fit = KID_TITLE_BYTES-1;
+    while (((unsigned char)text[fit] & 0xc0) == 0x80) fit--;
+  }
+  unsigned end = fit;
+  if (text[fit] && text[fit] != ' ')
+    for (unsigned i=0; i<fit; i++) if (text[i]==' ') end=i;
+  while (end && text[end-1]==' ') end--;
+  memcpy(line, text, end);
+  line[end]=0;
+  if (end) text+=end;
+  else if (*text) {
+    /* A single glyph cannot fit: consume it without drawing outside the box. */
+    text++;
+    while (((unsigned char)*text & 0xc0)==0x80) text++;
+  }
+  while (*text==' ') text++;
+  return text;
+}
+
 unsigned kid_progress_pixels(unsigned done, unsigned total) {
   return !total ? 0 : done >= total ? 200 : done * 200 / total;
 }

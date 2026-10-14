@@ -1,8 +1,26 @@
 # Kid-mode SD library and artwork format
 
-This prototype includes the picture picker, last-played startup, the upstream
-GBA launch path, and a two-action kid in-game menu. No physical SuperCard SD/GBA
-SP verification has been performed. Firmware does not decode PNG or JPEG.
+This local fork **prototype 0.22** (`VERSION_WORD=0x00000016`) includes the
+picture picker, last-played startup, upstream GBA launch path, and two-action
+kid in-game menu. The user performed hardware smoke tests on prior prototype
+**0.21**; this new **0.22 has not been hardware verified**. Those earlier tests
+do not establish compatibility for all games. Firmware does not decode PNG or
+JPEG. This is not an official upstream release.
+
+## Prototype 0.22 changes and upgrade from 0.21
+
+- Artwork now occupies 160×160 pixels flush left at (0,0), with wrapped title
+  and a small `A:Play` hint in the remaining 80-pixel right panel. No picker
+  arrows; **Left/Right** and **A** controls are unchanged.
+- New artwork is center-cropped to fill the square. Existing 160×104 BMPs remain
+  supported without stretching; regenerating artwork is optional during transition.
+- Keep backups of the existing firmware and SD contents. Remove the
+  `/.superfw/kidmode` marker before booting to access the normal flashing UI,
+  then follow the upstream flashing instructions below. Restore the empty marker
+  when ready to use kid mode. **Flashing is not performed by this work.**
+- Retain every existing ROM, save, config, history, and sidecar filename. No
+  migration or history reset is needed. No protocol, hotkey, launch-safety, or
+  normal-menu changes are part of 0.22; no upstream tag/release/merge is implied.
 
 ## Quick start
 
@@ -30,8 +48,12 @@ Remove the marker to return to the ordinary upstream menu at next boot. The
 marker is read once immediately after SD mount, before pending SRAM handling; firmware never writes normal config
 files to enable this mode.
 
-The picker shows one 160×104 picture (or placeholder), its friendly title, and
-left/right controls. **Left/Right** wraps through the alphabetically sorted
+The picker shows one 160×160 picture (or placeholder) at x=0, y=0, full height.
+The right panel uses variable-font-width/UTF-8-aware word wrapping, breaking long
+single words at character boundaries. Long titles that cannot fit show an
+ellipsis. Notices have their own bottom-aligned wrapped area, with no overlap
+with artwork, title, or the `A:Play` hint. No arrows are drawn. **Left/Right**
+wraps through the alphabetically sorted
 library; **A** plays. Other buttons have no picker actions or normal-menu escape.
 Navigation wins over simultaneous A, so a newly selected unseen game never
 launches. Empty libraries stay in a friendly screen. Partial/traversal-limited
@@ -173,25 +195,35 @@ uv run tools/kid-art.py picture.png /path/to/SD/Games/Mario.bmp
 ```
 
 The tool also accepts JPEG and ordinary Pillow-readable images. It honors EXIF
-orientation, composites transparency on black, fits without cropping into
-**160×104**, letterboxes on black, and quantizes to at most **220 colors**. It
-writes a deliberately narrow BMP dialect; BMPs saved by a general image editor
+orientation, composites transparency on black, center-crops/cover-resizes to
+**160×160** with no added padding, and quantizes to at most **220 colors**.
+Transparent pixels may consequently be black; the converter does not add bars.
+It writes a deliberately narrow BMP dialect; BMPs saved by a general image editor
 may not be compatible. No commercial ROMs/artwork are bundled.
 
-Accepted files are `BM`, 40-byte BITMAPINFOHEADER, exactly 160×104 (positive
-bottom-up or negative top-down height), one plane, 8 bits/pixel, BI_RGB/no
-compression, 1–220 explicitly declared BGR0 palette entries, pixel offset exactly
-`54 + 4 * palette_count`, and exactly 16640 pixel bytes. Header file size must
-match actual length; image size is zero or 16640; important-color count must not
-exceed palette count. No trailing data, other DIB formats, RLE, 256-entry default
+Accepted files are `BM`, 40-byte BITMAPINFOHEADER, exactly **160×160** or legacy
+**160×104** (positive bottom-up or negative top-down height), one plane,
+8 bits/pixel, BI_RGB/no compression, 1–220 explicitly declared BGR0 palette
+entries, pixel offset exactly `54 + 4 * palette_count`, and exactly **25600**
+pixel bytes (legacy: **16640**). Header file size must match actual length; image
+size is zero or the exact pixel byte count; important-color count must not exceed
+palette count. No trailing data, other DIB formats, RLE, 256-entry default
 palette, or out-of-palette pixels are accepted. Width is already four-byte
-aligned, so rows have no padding. Maximum accepted size is **17574 bytes**.
+aligned, so rows have no padding. Maximum accepted size is **26534 bytes**
+(legacy: **17574 bytes**).
+
+Legacy pixels are centered vertically at y=28 through y=131 in the 160×160
+canvas, without stretching. The transitional 28-pixel top/bottom letterbox uses
+the current UI background (palette index 17); any bars already inside old art
+are preserved. Regenerate from the original source image for a full-height
+cover, rather than converting the old letterboxed BMP.
 
 The reader validates headers/lengths and all pixel indices before touching
 outputs, then loads only the selected picture. Output is top-down packed
 halfwords (two indices per word), remapped to GBA palette **20–239**. Entries
 0–19 and 240–255 remain reserved for existing logo/UI colors; BGR8 colors become
-RGB555. Missing/bad artwork returns `false`, signaling the future picker to use
+RGB555. Legacy padding alone uses reserved UI background index 17.
+Missing/bad artwork returns `false`, signaling the picker to use
 a placeholder. On *any* failure outputs are unspecified: they are scratch data
 and must not be copied to VRAM or displayed until the reader returns `true`.
 
@@ -199,8 +231,8 @@ and must not be copied to VRAM or displayed until the reader returns `true`.
 
 The fixed library occupies **20490 bytes**, with explicit halfword entry copies
 and 16-bit metadata suitable for mapped cartridge scratch SDRAM. Selected artwork
-needs **16640 pixel bytes + 440 palette bytes**, also halfword-written. Combined
-picker cartridge scratch is **37570 bytes**, overlaid within the first 2MiB at
+needs **25600 pixel bytes + 440 palette bytes**, also halfword-written. Combined
+picker cartridge scratch is **46530 bytes**, overlaid within the first 2MiB at
 `0x08000000`, with font storage left at `0x08e80000`. There are
 no large static firmware allocations. The small `kid_scan_scratch` structure
 (**1456 bytes** with the current ARM FatFs configuration) must reside in
@@ -216,13 +248,14 @@ simulates cartridge scratch overwrite on load failure. It checks cache refresh,
 patch-policy failures, SRAM-save ordering, RTC/directsave preferences, cheats
 zero, and actual IRQ hook availability. Its ASan settings disable global roots
 for section GC and fake-stack instrumentation for upstream GCC nested callbacks.
-The library/input/render tests keep their ordinary ASan/UBSan instrumentation.
+The library/input/wrapping tests keep ordinary ASan/UBSan instrumentation. The
+production menu-layout harness uses the same section-GC instrumentation exception
+as the launch harness and checks artwork edges, right-panel clipping, complete
+notices, hint/title separation, placeholders and empty/error screens.
 
-Standalone ARM7 Thumb compilation with `-Os -fno-builtin` measured **2178 bytes
-of text, zero data/BSS** for this reader module. Compiler stack estimates were
-48 bytes for scanning plus 712 bytes for its title-reading helper, and 856 bytes
-for artwork loading, excluding FatFs callees. These are estimates, not final
-linked/compressed firmware size or hardware memory-use measurements.
+The 0.22 reader retains bounded ordinary-RAM header/row buffers and the same
+halfword scratch writes. Old 0.21 standalone text/stack measurements are not
+0.22 measurements; use the current linked SD build for size gates.
 
 Run the production-C reader/library checks and converter interoperability with:
 

@@ -2180,27 +2180,68 @@ static const struct {
 
 // Renders the menu. Arg0 represents the frame count difference with the
 // previous rendered frame (for animations and similar stuff).
+/* Kid-only layout: each font glyph is 16px tall. Count first so notices get
+ * their own bottom-aligned region; title truncation cannot cover notices/hint. */
+static unsigned kid_text_rows(const char *text, unsigned width) {
+  unsigned rows=0; char line[KID_TITLE_BYTES];
+  while (*text) { text=kid_text_line(text,width,font_width_cap,line); rows++; }
+  return rows;
+}
+
+static void kid_text_box(const char *text, volatile uint8_t *frame,
+                         unsigned x, unsigned y, unsigned width, unsigned bottom) {
+  char line[KID_TITLE_BYTES];
+  while (*text && y+KID_TEXT_HEIGHT<=bottom) {
+    const char *next=kid_text_line(text,width,font_width_cap,line);
+    /* Show bounded truncation when a title exhausts its vertical space. */
+    if (*next && y+2*KID_TEXT_HEIGHT>bottom) {
+      unsigned dots=font_width("...");
+      if (dots<=width) {
+        unsigned n=font_width_cap(line,width-dots);
+        if (n>KID_TITLE_BYTES-4) {
+          n=KID_TITLE_BYTES-4;
+          while (((unsigned char)line[n]&0xc0)==0x80) n--;
+        }
+        memcpy(line+n,"...",4);
+      }
+    }
+    draw_text_idx8_bus16_range(line,(uint8_t*)frame+y*SCREEN_WIDTH+x,0,width,SCREEN_WIDTH,FT_COLOR);
+    text=next; y+=KID_TEXT_HEIGHT;
+  }
+}
+
 static void kid_render(volatile uint8_t *frame) {
   bool have_game = kid_sdr->library.count != 0;
   kid_picture_render((volatile uint16_t*)frame, kid_sdr->pixels, have_game && kid_art_valid);
   if (have_game && kid_art_valid)
     dma_memcpy16(&MEM_PALETTE[KID_ART_PALETTE_FIRST], kid_sdr->palette, KID_ART_COLORS);
   REG_WIN0H = REG_WIN0V = 0;
-  if (!have_game) {
-    draw_central_text(kid_sdr->library.io_error ? "Could not read your games" : "No games here yet", frame, 120, 64);
-    draw_central_text("Ask a grown-up for help", frame, 120, 88);
-  } else {
-    draw_central_text_ovf(kid_sdr->library.entries[kid_selected].title, frame, 120, 4, 220);
-    if (!kid_art_valid) draw_central_text("Let's play!", frame, 120, 68);
-    draw_central_text("<", frame, 20, 68);
-    draw_central_text(">", frame, 220, 68);
-    draw_central_text("Left / Right     A: Play", frame, 120, 128);
-  }
   const char *notice = !kid_boot_pending_ok ? "Could not save. Ask a grown-up" :
     kid_message ? kid_message :
     kid_sdr->library.io_error ? "Some games could not be read" :
     kid_sdr->library.limited ? "Showing some of your games" : NULL;
-  if (notice) draw_central_text_ovf(notice, frame, 120, 144, 228);
+  if (!have_game) {
+    /* There is no artwork to obscure; retain generous, readable empty/error UI. */
+    kid_text_box(kid_sdr->library.io_error ? "Could not read your games" : "No games here yet",frame,8,32,224,64);
+    kid_text_box("Ask a grown-up for help",frame,8,72,224,104);
+    if (notice) kid_text_box(notice,frame,8,120,224,160);
+    return;
+  }
+  unsigned notice_y=SCREEN_HEIGHT;
+  if (notice) {
+    unsigned rows=kid_text_rows(notice,KID_PANEL_WIDTH);
+    /* Current bounded notices fit in five rows; cap defensively for future text. */
+    if (rows>6) rows=6;
+    notice_y=SCREEN_HEIGHT-rows*KID_TEXT_HEIGHT;
+    kid_text_box(notice,frame,KID_PANEL_X,notice_y,KID_PANEL_WIDTH,SCREEN_HEIGHT);
+  }
+  unsigned title_bottom=notice_y;
+  if (font_width("A:Play")<=KID_PANEL_WIDTH && title_bottom>=2*KID_TEXT_HEIGHT) {
+    title_bottom-=KID_TEXT_HEIGHT;
+    kid_text_box("A:Play",frame,KID_PANEL_X,title_bottom,KID_PANEL_WIDTH,notice_y);
+  }
+  kid_text_box(kid_sdr->library.entries[kid_selected].title,frame,
+               KID_PANEL_X,0,KID_PANEL_WIDTH,title_bottom);
 }
 
 void menu_render(unsigned fcnt) {

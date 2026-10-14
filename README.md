@@ -14,9 +14,10 @@ boots the last-played game; hold **B** during startup for the picture picker.
 
 See [SD setup and controls](KID-MODE-SD.md). The default **L+R+Start** in-game
 menu offers **Keep playing** and **Choose another game** on supported games.
-Software/host and SuperCard-aware emulator checks have passed; physical cart
-behavior and game-specific compatibility are **not verified**. This is a
-prototype, not an upstream release. No games or commercial artwork are bundled.
+Prior prototype 0.21 passed software/host and SuperCard-aware emulator checks
+and received user hardware smoke tests. This local fork prototype **0.22** adds
+full-height covers and wrapped titles; **0.22 is not hardware verified**, and
+game-specific compatibility is not guaranteed. This is not an upstream release. No games or commercial artwork are bundled.
 
 The upstream documentation and installation instructions below still apply.
 

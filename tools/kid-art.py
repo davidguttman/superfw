@@ -12,7 +12,7 @@ import tempfile
 
 from PIL import Image, ImageOps
 
-WIDTH, HEIGHT, COLORS = 160, 104, 220
+WIDTH, HEIGHT, COLORS = 160, 160, 220
 
 
 def convert(source: Path, destination: Path) -> None:
@@ -20,10 +20,9 @@ def convert(source: Path, destination: Path) -> None:
         image = ImageOps.exif_transpose(original).convert("RGBA")
         background = Image.new("RGBA", image.size, "black")
         background.alpha_composite(image)
-        image = ImageOps.contain(background.convert("RGB"), (WIDTH, HEIGHT), Image.Resampling.LANCZOS)
-        canvas = Image.new("RGB", (WIDTH, HEIGHT), "black")
-        canvas.paste(image, ((WIDTH - image.width) // 2, (HEIGHT - image.height) // 2))
-        indexed = canvas.quantize(colors=COLORS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        # Cover the square completely; center-crop rather than add padding.
+        image = ImageOps.fit(background.convert("RGB"), (WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+        indexed = image.quantize(colors=COLORS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
         # Write the BMP ourselves: Pillow normally emits 256 palette entries,
         # which would overlap the firmware's reserved UI palette indices.
         palette = indexed.getpalette()
@@ -45,6 +44,31 @@ def self_test(reader: str) -> None:
         Image.new("RGB", (320, 208), "red").save(source)
         convert(source, output)
         subprocess.run([str(Path(reader).resolve()), str(output)], check=True)
+        with Image.open(output) as result:
+            assert result.size == (160, 160)
+            assert result.convert("RGB").getextrema() == ((255, 255), (0, 0), (0, 0))
+        # Cover-crop must discard wide/tall colored borders, not add bars.
+        for size in ((480, 160), (160, 480)):
+            image = Image.new("RGB", size, "blue")
+            left, top = (size[0]-160)//2, (size[1]-160)//2
+            image.paste("red", (left, top, left+160, top+160))
+            image.save(source)
+            convert(source, output)
+            with Image.open(output) as result:
+                assert result.size == (160, 160)
+                assert result.convert("RGB").getextrema() == ((255, 255), (0, 0), (0, 0))
+            subprocess.run([str(Path(reader).resolve()), str(output)], check=True)
+        # EXIF orientation is applied before cropping (PNG avoids JPEG ringing).
+        image = Image.new("RGB", (160, 160), "red")
+        image.paste("blue", (0, 0, 80, 160))
+        exif = Image.Exif(); exif[274] = 6
+        image.save(source, exif=exif)
+        convert(source, output)
+        with Image.open(output) as result:
+            rgb = result.convert("RGB")
+            assert rgb.getpixel((80, 10)) == (0, 0, 255)
+            assert rgb.getpixel((80, 150)) == (255, 0, 0)
+        subprocess.run([str(Path(reader).resolve()), str(output), "--any"], check=True)
         # Ordinary JPEG and RGBA inputs exercise the same writer.
         for mode, suffix, color in (("RGB", "jpg", "red"), ("RGBA", "png", (255, 0, 0, 255))):
             source = Path(directory) / f"original.{suffix}"
@@ -56,7 +80,10 @@ def self_test(reader: str) -> None:
             image.save(source.with_suffix(".png"))
             convert(source.with_suffix(".png"), output)
             subprocess.run([str(Path(reader).resolve()), str(output), "--any"], check=True)
-    print("PNG/JPEG/RGBA, quantization, letterbox and transparency round trips passed")
+            if image.mode == "RGBA":
+                with Image.open(output) as result:
+                    assert result.convert("RGB").getextrema() == ((0, 0), (0, 0), (0, 0))
+    print("PNG/JPEG/RGBA, cover crop, EXIF, quantization and transparency round trips passed")
 
 
 def main() -> None:

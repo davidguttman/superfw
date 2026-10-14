@@ -15,7 +15,8 @@
 #define KID_MAX_DIRS 64
 #define KID_MAX_ITEMS 1024
 #define KID_ART_WIDTH 160
-#define KID_ART_HEIGHT 104
+#define KID_ART_HEIGHT 160
+#define KID_ART_LEGACY_HEIGHT 104
 #define KID_ART_COLORS 220
 #define KID_ART_PALETTE_FIRST 20
 #define KID_ART_WORDS (KID_ART_WIDTH * KID_ART_HEIGHT / 2)
@@ -55,6 +56,7 @@ bool kid_sidecar_path(const char *rom, const char *extension, char *destination)
 
 /* Only selected artwork is loaded. False => caller renders placeholder.
  * On false, output is unspecified and MUST NOT be displayed/copied to VRAM.
+ * Legacy 160x104 art is centered without stretching, with UI-background bars.
  * Pixels are top-down, two mode-4 indices per little-endian uint16_t.
  * Palette contains KID_ART_COLORS RGB555 colors for indices 20..239.
  */

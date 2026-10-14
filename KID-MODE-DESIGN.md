@@ -1,6 +1,6 @@
 # Kid mode: agreed prototype design
 
-Status: implemented prototype; host/build and SuperCard-aware emulator checks verified. Physical hardware and game-specific compatibility remain unverified.
+Status: local fork prototype 0.22, full-height picker revision. Prior 0.21 passed host/build and SuperCard-aware emulator checks and received user hardware smoke tests. New 0.22 is not hardware verified; game-specific compatibility remains limited.
 
 ## Target and scope
 

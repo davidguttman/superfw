@@ -37,6 +37,7 @@ cli_tests:
 # Focused production-parser gate, no lcov dependency or changes to upstream all.
 .PHONY: kid_tests
 kid_tests:
+	$(MAKE) -C .. src/messages_data.h src/menu_messages.h
 	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie -I../src -I.. -o kid_library_test.bin kid_library_test.c ../src/kid_library.c
 	./kid_library_test.bin
 	uv run ../tools/kid-art.py --self-test ./kid_library_test.bin
@@ -44,17 +45,24 @@ kid_tests:
 	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie -I../src -I.. -ffunction-sections -fdata-sections -Wl,--gc-sections -o kid_mode_test.bin kid_mode_test.c ../src/kid_mode.c
 	./kid_mode_test.bin
 
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-pie -no-pie -I../src -I.. -ffunction-sections -fdata-sections -Wl,--gc-sections -Wno-error=old-style-declaration -Wno-error=discarded-qualifiers -o kid_text_test.bin kid_text_test.c ../src/kid_mode.c ../src/fonts/font_render.c ../src/utf_util.c
+	./kid_text_test.bin
+
+	# Production kid-only layout and real font renderer; unrelated menu code is GC'd.
+	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -DFW_MAX_SIZE_KB=512 -DVERSION_WORD=22 -DVERSION_SLUG_WORD=0 -DFW_FLAVOUR='"SD"' -Wl,--gc-sections -o kid_render_test.bin kid_render_test.c ../src/kid_mode.c ../src/fonts/font_render.c ../src/utf_util.c
+	ASAN_OPTIONS=detect_stack_use_after_return=0 ./kid_render_test.bin
+
 	# Actual menu launch path; drop unrelated UI sections before linking mocks.
 	# ASan global roots would retain every popup, and upstream nested callbacks
 	# require the real executable stack (not ASan's non-executable fake stack).
-	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -DFW_MAX_SIZE_KB=512 -DVERSION_WORD=21 -DVERSION_SLUG_WORD=0 -DFW_FLAVOUR='"SD"' -Wl,--gc-sections -o kid_launch_test.bin kid_launch_test.c ../src/kid_mode.c
+	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -DFW_MAX_SIZE_KB=512 -DVERSION_WORD=22 -DVERSION_SLUG_WORD=0 -DFW_FLAVOUR='"SD"' -Wl,--gc-sections -o kid_launch_test.bin kid_launch_test.c ../src/kid_mode.c
 	ASAN_OPTIONS=detect_stack_use_after_return=0 ./kid_launch_test.bin
 
 # The production SDRAM loader, including its fast and slow hardware-copy paths.
 .PHONY: loader_tests
 loader_tests:
 	# Upstream fix_gba_header shifts a negative checksum; outside this I/O gate.
-	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined -fno-sanitize=shift --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -DFW_MAX_SIZE_KB=512 -DVERSION_WORD=21 -DVERSION_SLUG_WORD=0 -DFW_FLAVOUR='"SD"' -Wl,--gc-sections -o loader_read_test.bin loader_read_test.c
+	$(CC) -std=gnu11 -O1 -g -fno-builtin -ffunction-sections -fdata-sections -fsanitize=address,undefined -fno-sanitize=shift --param asan-globals=0 -fno-pie -no-pie -I../src -I.. -DFW_MAX_SIZE_KB=512 -DVERSION_WORD=22 -DVERSION_SLUG_WORD=0 -DFW_FLAVOUR='"SD"' -Wl,--gc-sections -o loader_read_test.bin loader_read_test.c
 	./loader_read_test.bin
 
 .PHONY: kid_return_tests

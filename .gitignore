@@ -7,3 +7,9 @@
 *.gcno
 *.info
 *.i
+
+# Host test executables and local verification logs
+/tests/*.bin
+/tests/*.log
+/src/messages_data.h
+/src/menu_messages.h

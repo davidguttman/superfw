@@ -137,19 +137,22 @@ static void library_tests(void) {
 }
 
 #define BMP_OFFSET (54 + 8)
-#define BMP_BYTES (BMP_OFFSET + KID_ART_WIDTH * KID_ART_HEIGHT)
-static unsigned char bmp[BMP_BYTES];
+#define BMP_BYTES (BMP_OFFSET + 160 * 160)
+static unsigned bmp_size;
+static unsigned char bmp[BMP_BYTES+1];
 static void put16(unsigned at, unsigned v) { bmp[at]=v; bmp[at+1]=v>>8; }
 static void put32(unsigned at, uint32_t v) { put16(at,v); put16(at+2,v>>16); }
-static void good_bmp(int topdown) {
-  memset(bmp,0,sizeof(bmp)); bmp[0]='B';bmp[1]='M';put32(2,sizeof(bmp));put32(10,BMP_OFFSET);put32(14,40);
-  put32(18,KID_ART_WIDTH);put32(22,topdown ? (uint32_t)-KID_ART_HEIGHT : KID_ART_HEIGHT);put16(26,1);put16(28,8);put32(34,KID_ART_WIDTH*KID_ART_HEIGHT);put32(46,2);
+static void sized_bmp(unsigned height, int topdown) {
+  bmp_size = BMP_OFFSET + 160 * height;
+  memset(bmp,0,sizeof(bmp)); bmp[0]='B';bmp[1]='M';put32(2,bmp_size);put32(10,BMP_OFFSET);put32(14,40);
+  put32(18,KID_ART_WIDTH);put32(22,topdown ? (uint32_t)-height : height);put16(26,1);put16(28,8);put32(34,KID_ART_WIDTH*height);put32(46,2);
   bmp[54+2]=255; bmp[58+1]=255;
   memset(bmp+BMP_OFFSET,1,KID_ART_WIDTH); /* red elsewhere, green first disk row */
 }
+static void good_bmp(int topdown) { sized_bmp(160, topdown); }
 static uint16_t pixels[KID_ART_WORDS + 2], palette[KID_ART_COLORS + 2];
 static bool load(void) {
-  reset(); add("/art.bmp",bmp,sizeof(bmp),0);
+  reset(); add("/art.bmp",bmp,bmp_size,0);
   pixels[0]=pixels[KID_ART_WORDS+1]=0xabcd; palette[0]=palette[KID_ART_COLORS+1]=0xabcd;
   for (unsigned i=1;i<=KID_ART_WORDS;i++) pixels[i]=0xaaaa;
   for (unsigned i=1;i<=KID_ART_COLORS;i++) palette[i]=0xbbbb;
@@ -159,16 +162,32 @@ static bool load(void) {
   return ok;
 }
 static void art_tests(void) {
+  for (unsigned topdown=0; topdown<2; topdown++) {
+    sized_bmp(104, topdown); assert(load());
+    for (unsigned y=0; y<160; y++) for (unsigned x=0; x<80; x++) {
+      unsigned green_y = topdown ? 28 : 131;
+      uint16_t expected = y<28 || y>=132 ? 0x1111 : y==green_y ? 0x1515 : 0x1414;
+      assert(pixels[1+y*80+x]==expected);
+    }
+  }
   good_bmp(0); assert(load()); assert(pixels[1] == 0x1414); assert(pixels[KID_ART_WORDS-79] == 0x1515); assert(palette[1]==31 && palette[2]==31*32);
   good_bmp(1); assert(load()); assert(pixels[1]==0x1515 && pixels[81]==0x1414);
+  good_bmp(0); put32(34,0); assert(load());
+  good_bmp(0); reset(); add("/art.bmp",bmp,bmp_size+1,0);
+  assert(!kid_art_load("/art.bmp",pixels+1,palette+1)); assert(opened==closed);
   good_bmp(0); put32(10,53); assert(!load());
   good_bmp(0); put32(10,0xfffffff0); assert(!load());
   good_bmp(0); put32(18,159); assert(!load());
   good_bmp(0); put32(22,105); assert(!load());
+  good_bmp(0); put32(22,0x80000000); assert(!load());
+  good_bmp(0); put32(22,0); assert(!load());
+  good_bmp(0); put32(22,104); assert(!load());
+  sized_bmp(104,0); put32(22,160); assert(!load());
+  sized_bmp(104,0); bmp[BMP_OFFSET+160*104-1]=2; assert(!load());
   good_bmp(0); put32(30,1); assert(!load());
   good_bmp(0); put16(28,24); assert(!load());
   good_bmp(0); put32(14,108); assert(!load());
-  good_bmp(0); put32(2,sizeof(bmp)+1); assert(!load());
+  good_bmp(0); put32(2,bmp_size+1); assert(!load());
   good_bmp(0); put32(6,1); assert(!load());
   good_bmp(0); put32(34,17); assert(!load());
   good_bmp(0); put32(50,3); assert(!load());
@@ -179,10 +198,10 @@ static void art_tests(void) {
   good_bmp(0); bmp[58+3]=255; assert(!load());
   good_bmp(0); bmp[BMP_OFFSET+5]=2; assert(!load());
   good_bmp(0); bmp[0]='X'; assert(!load());
-  good_bmp(0); reset(); add("/art.bmp",bmp,sizeof(bmp)-1,0); assert(!kid_art_load("/art.bmp",pixels+1,palette+1)); assert(opened==closed);
+  good_bmp(0); reset(); add("/art.bmp",bmp,bmp_size-1,0); assert(!kid_art_load("/art.bmp",pixels+1,palette+1)); assert(opened==closed);
   for (unsigned i=0;i<54;i++) { reset(); add("/art.bmp",bmp,i,0); assert(!kid_art_load("/art.bmp",pixels+1,palette+1)); assert(opened==closed); }
   reset(); assert(!kid_art_load("/missing.bmp",pixels+1,palette+1));
-  good_bmp(0); reset(); add("/art.bmp",bmp,sizeof(bmp),0); read_fail_after=2; assert(!kid_art_load("/art.bmp",pixels+1,palette+1)); assert(opened==closed);
+  good_bmp(0); reset(); add("/art.bmp",bmp,bmp_size,0); read_fail_after=2; assert(!kid_art_load("/art.bmp",pixels+1,palette+1)); assert(opened==closed);
 }
 int main(int argc, char **argv) {
   if (argc==2 || argc==3) {
